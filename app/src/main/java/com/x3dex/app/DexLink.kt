@@ -1,5 +1,9 @@
 package com.x3dex.app
 
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.SystemClock
@@ -30,7 +34,7 @@ import kotlin.concurrent.thread
  * changing resolution mid-session cannot silently move every click.
  */
 class DexLink(
-    private val host: String,
+    private val hostProvider: () -> String,
     private val port: Int = 7391,
     private val onState: (String) -> Unit,
     private val onGeometry: (w: Int, h: Int, inputReady: Boolean) -> Unit,
@@ -40,6 +44,7 @@ class DexLink(
     @Volatile private var sock: Socket? = null
     @Volatile private var out: DataOutputStream? = null
     private var decoder: MediaCodec? = null
+    private var audioTrack: AudioTrack? = null
 
     /** Absolute frame geometry, for turning taps into fractions. */
     @Volatile var frameW = 0
@@ -60,11 +65,14 @@ class DexLink(
         runCatching { sock?.close() }
         runCatching { decoder?.stop(); decoder?.release() }
         decoder = null
+        runCatching { audioTrack?.stop(); audioTrack?.release() }
+        audioTrack = null
     }
 
     private fun run(surface: Surface) {
         while (running) {
             try {
+                val host = hostProvider()
                 onState("connecting to $host…")
                 val s = Socket()
                 s.connect(InetSocketAddress(host, port), 4000)
@@ -78,7 +86,10 @@ class DexLink(
                 frameW = inp.readInt(); frameH = inp.readInt()
                 val fps = inp.readInt()
                 inputReady = inp.readInt() == 1
-                Log.i(TAG, "stream ${frameW}x$frameH @${fps} input=$inputReady")
+                val audioRate = inp.readInt()
+                val audioCh = inp.readInt()
+                if (audioRate > 0) openAudio(audioRate, audioCh)
+                Log.i(TAG, "stream ${frameW}x$frameH @${fps} input=$inputReady audio=${audioRate}Hz")
                 onGeometry(frameW, frameH, inputReady)
                 onState(if (inputReady) "connected" else "connected — mirror only")
 
@@ -103,6 +114,8 @@ class DexLink(
             }
             runCatching { decoder?.stop(); decoder?.release() }
             decoder = null
+            runCatching { audioTrack?.stop(); audioTrack?.release() }
+            audioTrack = null
             runCatching { sock?.close() }
             if (running) Thread.sleep(1200)
         }
@@ -116,6 +129,16 @@ class DexLink(
 
         while (running) {
             val magic = inp.readInt()
+            if (magic == MAGIC_AUDIO) {
+                val alen = inp.readInt()
+                val abuf = ByteArray(alen)
+                inp.readFully(abuf)
+                // MODE_STREAM write blocks until the track has room, which is
+                // exactly the pacing we want — the audio clock throttles
+                // itself and never runs ahead of the speaker.
+                runCatching { audioTrack?.write(abuf, 0, alen) }
+                continue
+            }
             if (magic != MAGIC_FRAME) throw IllegalStateException("desync")
             val sentNanos = inp.readLong()
             val flags = inp.readInt()
@@ -171,6 +194,38 @@ class DexLink(
         }
     }
 
+    private fun openAudio(rate: Int, channels: Int) {
+        runCatching {
+            val chMask = if (channels >= 2) AudioFormat.CHANNEL_OUT_STEREO
+                         else AudioFormat.CHANNEL_OUT_MONO
+            val minBuf = AudioTrack.getMinBufferSize(
+                rate, chMask, AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(4096)
+            val t = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(rate)
+                        .setChannelMask(chMask)
+                        .build()
+                )
+                // Two device buffers: enough to ride out network jitter,
+                // little enough that sound stays close to the picture.
+                .setBufferSizeInBytes(minBuf * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            t.play()
+            audioTrack = t
+            Log.i(TAG, "audio track open ${rate}Hz")
+        }.onFailure { Log.w(TAG, "audio open failed: ${it.message}") }
+    }
+
     // ── Pointer work, normalised 0..1 ────────────────────────────────
 
     fun tap(fx: Float, fy: Float) = send { it.writeByte('T'.code); it.writeFloat(fx); it.writeFloat(fy) }
@@ -193,6 +248,7 @@ class DexLink(
         const val TAG = "X3Dex"
         const val MAGIC_HELLO = 0xDEC0DE00.toInt()
         const val MAGIC_FRAME = 0xDEC0DE01.toInt()
+        const val MAGIC_AUDIO = 0xDEC0DE02.toInt()
         const val ACTION_BACK = 1
         const val ACTION_HOME = 2
         const val ACTION_RECENTS = 3

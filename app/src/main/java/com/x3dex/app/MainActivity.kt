@@ -47,6 +47,7 @@ class MainActivity : Activity() {
     private lateinit var settings: SettingsPanel
 
     private var link: DexLink? = null
+    private var discovery: Discovery? = null
     private val ui = Handler(Looper.getMainLooper())
 
     // Cursor lives in VIEWPORT pixels; taps convert to a fraction of the
@@ -79,11 +80,11 @@ class MainActivity : Activity() {
         }
         content.addView(video)
 
-        cursor = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(10, 10)
-            setBackgroundColor(0xFF33EFFF.toInt())
-        }
-        content.addView(cursor)
+        // No visible cursor, per the wearer: the bright dot floating over
+        // the phone read as clutter. The pointer POSITION still exists —
+        // taps land where the trackpad last moved it — it simply is not
+        // drawn. The phone's own focus highlight is the feedback instead.
+        cursor = View(this)   // never attached; kept so moveCursor is a no-op-safe
 
         status = TextView(this).apply {
             setTextColor(0xFF7FDBFF.toInt())
@@ -119,19 +120,23 @@ class MainActivity : Activity() {
 
     private fun connect(surface: Surface) {
         link?.stop()
-        val host = Prefs.host(this)
+        if (discovery == null) discovery = Discovery(this).also { it.start() }
+        // Discovered address wins; the settings IP is the fallback for
+        // networks that block mDNS. Resolved lazily on each reconnect so an
+        // address change is picked up without restarting anything.
+        val hostProvider = { discovery?.host ?: Prefs.host(this) }
         link = DexLink(
-            host = host,
-            onState = { s -> ui.post { status.text = "$host — $s" } },
+            hostProvider = hostProvider,
+            onState = { s -> ui.post { status.text = "${hostProvider()} — $s" } },
             onGeometry = { w, h, input ->
                 ui.post {
                     Log.i(DexLink.TAG, "geometry ${w}x$h input=$input")
                     fitVideoToFrame(w, h)
-                    if (!input) status.text = "$host — connected (enable DexProbe input on the phone to click)"
+                    if (!input) status.text = "${hostProvider()} — connected (enable DexProbe input on the phone to click)"
                 }
             },
             onStats = { fps, lat ->
-                ui.post { status.text = "%s — %.0f fps  %.0f ms".format(host, fps, lat) }
+                ui.post { status.text = "%s — %.0f fps  %.0f ms".format(hostProvider(), fps, lat) }
             }
         ).also { it.start(surface) }
     }
@@ -256,16 +261,13 @@ class MainActivity : Activity() {
     }
 
     private fun moveCursor(dx: Float, dy: Float) {
+        // Position only — nothing is drawn. The tap reads cx/cy to place the
+        // click; the wearer aims by the phone's response, not a dot.
         cx = (cx + dx).coerceIn(0f, VIEW_W - 1f)
         cy = (cy + dy).coerceIn(0f, VIEW_H - 1f)
-        (cursor.layoutParams as FrameLayout.LayoutParams).apply {
-            leftMargin = (cx - 5).toInt()
-            topMargin = (cy - 5).toInt()
-        }
-        cursor.requestLayout()
     }
 
-    override fun onDestroy() { link?.stop(); super.onDestroy() }
+    override fun onDestroy() { link?.stop(); discovery?.stop(); super.onDestroy() }
 
     companion object {
         const val VIEW_W = 640
