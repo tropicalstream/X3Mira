@@ -5,6 +5,21 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- The page agent listens only while the wearer holds it open with a tap. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!--
+        Wi-Fi Direct, for reaching the phone with no router and no hotspot.
+        These glasses are Android 12, so ACCESS_FINE_LOCATION is the one that
+        actually applies here — NEARBY_WIFI_DEVICES is declared for the day
+        the platform moves. Without the granted permission P2P discovery
+        returns an empty list rather than an error, which looks exactly like
+        the phone not being switched on.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- TextToSpeech engine lookup on API 30+. -->
     <queries>
         <intent>

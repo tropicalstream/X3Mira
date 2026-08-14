@@ -48,6 +48,7 @@ class MainActivity : Activity() {
 
     private var link: DexLink? = null
     private var discovery: Discovery? = null
+    private var p2p: P2pClient? = null
     private val ui = Handler(Looper.getMainLooper())
     // Last stream geometry, kept so a HUD-config change can refit the video
     // into the new bands without waiting for a reconnect.
@@ -300,15 +301,36 @@ class MainActivity : Activity() {
             override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
         }
         moveCursor(0f, 0f)
+        // Wi-Fi Direct discovery returns an empty list without this grant
+        // rather than failing, so it is asked for up front — an unexplained
+        // "cannot find the phone" is the worst way to learn about it.
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) runCatching {
+            requestPermissions(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION), 4711)
+        }
     }
 
     private fun connect(surface: Surface) {
         link?.stop()
         if (discovery == null) discovery = Discovery(this).also { it.start() }
-        // Discovered address wins; the settings IP is the fallback for
-        // networks that block mDNS. Resolved lazily on each reconnect so an
-        // address change is picked up without restarting anything.
-        val hostProvider = { discovery?.host ?: Prefs.host(this) }
+        // Opt-in, and read fresh on every reconnect so toggling it in settings
+        // takes effect without a restart.
+        if (!Prefs.p2p(this)) { p2p?.stop(); p2p = null }
+        else if (p2p == null) p2p = P2pClient(this) { addr ->
+            // A group formed while we were dialling something else: reconnect
+            // now rather than at the next retry, so joining the group is felt
+            // immediately instead of up to a retry period later.
+            Log.i(TAG, "p2p host $addr — reconnecting the link")
+            ui.post { link?.stop() }
+        }.also { it.start() }
+        // ORDER MATTERS. A formed Wi-Fi Direct group is the most specific
+        // answer there is — the phone is right there and owns the address —
+        // so it outranks mDNS, which can only speak when a router is carrying
+        // multicast. The settings IP stays last, for networks that block mDNS
+        // and pairs that are not using P2P. Resolved lazily on each reconnect
+        // so a change is picked up without restarting anything.
+        val hostProvider = { p2p?.host ?: discovery?.host ?: Prefs.host(this) }
         // Until the socket says otherwise we are either hunting for the phone
         // (no mDNS answer yet) or dialling the fallback — the HUD says which.
         showHud(
@@ -778,7 +800,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         hud.stop(); ui.removeCallbacks(hideNotice); ui.removeCallbacks(mouseTimeout)
         agent?.destroy(); agent = null
-        link?.stop(); discovery?.stop(); super.onDestroy()
+        link?.stop(); discovery?.stop(); p2p?.stop(); super.onDestroy()
     }
 
     companion object {

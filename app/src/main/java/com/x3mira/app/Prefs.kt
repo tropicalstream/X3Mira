@@ -11,6 +11,18 @@ object Prefs {
     private const val FILE = "x3dex"
     private const val K_HOST = "host"
     private const val K_WIDTH = "width"
+    /**
+     * Wi-Fi Direct instead of a shared network. OFF by default and stored on
+     * the GLASSES rather than pushed from the phone, because it is the setting
+     * that decides whether a link can exist at all — a preference that only
+     * arrives over the link is no use to someone who has no link.
+     *
+     * Off by default because forming a P2P group can take the Wi-Fi radio away
+     * from an ordinary connection, and a wearer whose mirror already works at
+     * home should not have it changed underneath them by an update.
+     */
+    private const val K_P2P = "p2p"
+
     private const val K_SPEED = "speed"
 
     /** Presets, coarsest first. "Best" is the default and means half-native. */
@@ -32,5 +44,8 @@ object Prefs {
 
     /** Cursor gain. The pad is small; 2.5 crosses the viewport in one swipe. */
     fun speed(c: Context): Float = p(c).getFloat(K_SPEED, 2.5f)
+
+    fun p2p(c: Context): Boolean = p(c).getBoolean(K_P2P, false)
+    fun setP2p(c: Context, v: Boolean) = p(c).edit().putBoolean(K_P2P, v).apply()
     fun setSpeed(c: Context, v: Float) = p(c).edit().putFloat(K_SPEED, v).apply()
 }

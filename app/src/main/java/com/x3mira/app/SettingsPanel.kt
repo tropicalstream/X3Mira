@@ -37,6 +37,7 @@ class SettingsPanel(
 
     private val resRow: TextView
     private val speedRow: TextView
+    private val p2pRow: TextView
     private val hostRow: TextView
     private var globalSender: ((Int) -> Unit)? = null
 
@@ -56,6 +57,12 @@ class SettingsPanel(
                 activity,
                 when (Prefs.speed(activity)) { 1.5f -> 2.5f; 2.5f -> 4.0f; else -> 1.5f }
             )
+            refresh()
+        }
+        p2pRow = row {
+            // Toggling reconnects: the link is torn down by MainActivity on the
+            // next connect(), which re-reads this.
+            Prefs.setP2p(activity, !Prefs.p2p(activity))
             refresh()
         }
         hostRow = row {
@@ -111,6 +118,10 @@ class SettingsPanel(
         // and they want opposite things — a pan should cover ground, a pointer
         // should settle on a target.
         speedRow.text = "Pan speed:  ${Prefs.speed(activity)}x"
+        // Named for what it BUYS, not for the protocol: the wearer cares that
+        // it needs no router and no hotspot, not that it is called P2P.
+        p2pRow.text = "Connect:  " + if (Prefs.p2p(activity))
+            "Wi-Fi Direct (no router)" else "Wi-Fi network"
         hostRow.text = "Phone:  ${Prefs.host(activity)}"
     }
 
