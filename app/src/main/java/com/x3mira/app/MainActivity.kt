@@ -59,6 +59,102 @@ class MainActivity : Activity() {
     private var cx = VIEW_W / 2f
     private var cy = VIEW_H / 2f
 
+    /**
+     * Which temple pad an event came from.
+     *
+     * The two arms are SEPARATE input devices on this hardware — verified with
+     * getevent: the right arm is cyttsp5 (/dev/input/event2) and the left is
+     * cyttsp6 (/dev/input/event4), each a 639x197 multitouch pad — so an event
+     * carries the arm in its device id and nothing extra is needed to tell
+     * them apart.
+     *
+     * Resolved by NAME rather than by the raw id. Android hands out input
+     * device ids at enumeration time and they are not stable across reboots or
+     * a hot-plug, so pinning arm = id 4 would work perfectly today and quietly
+     * swap the wearer's arms some morning after a restart.
+     */
+    private lateinit var cursor: PadCursor
+
+    /**
+     * Mouse mode: the pointer is up and the right pad drives it instead of
+     * panning. Temporary by design — it times out, because a pointer that
+     * stayed forever would mean the pad had two permanent meanings and the
+     * wearer would have to remember which one is current with nothing on
+     * screen to tell them.
+     */
+    private var mouseMode = false
+    private var lastMouseAt = 0L
+    private var lastEdgePullAt = 0L
+
+    private val mouseTimeout = Runnable {
+        if (mouseMode && SystemClock.uptimeMillis() - lastMouseAt >= MOUSE_IDLE_MS) exitMouseMode()
+        else if (mouseMode) armMouseTimeout()
+    }
+
+    private fun armMouseTimeout() {
+        ui.removeCallbacks(mouseTimeout)
+        ui.postDelayed(mouseTimeout, MOUSE_IDLE_MS)
+    }
+
+    private fun enterMouseMode() {
+        mouseMode = true
+        lastMouseAt = SystemClock.uptimeMillis()
+        // Summon it where the wearer is LOOKING, not where it was abandoned
+        // minutes ago on some other page. Centre of the picture is the one
+        // place that is always on screen and always meaningful.
+        videoRect()?.let { r -> cx = r[0] + r[2] / 2f; cy = r[1] + r[3] / 2f }
+        placeCursor()
+        cursor.visibility = View.VISIBLE
+        flashNotice("cursor")
+        armMouseTimeout()
+    }
+
+    private fun exitMouseMode() {
+        mouseMode = false
+        ui.removeCallbacks(mouseTimeout)
+        cursor.visibility = View.GONE
+    }
+
+    /** Keep the pointer alive while it is being used. */
+    private fun touchedMouse() {
+        lastMouseAt = SystemClock.uptimeMillis()
+        armMouseTimeout()
+    }
+
+    private fun placeCursor() {
+        val lp = cursor.layoutParams as FrameLayout.LayoutParams
+        lp.leftMargin = (cx - PadCursor.SIZE / 2f).toInt()
+        lp.topMargin = (cy - PadCursor.SIZE / 2f).toInt()
+        cursor.layoutParams = lp
+    }
+
+    private val armCache = HashMap<Int, Int>()
+
+    private fun armOf(deviceId: Int): Int = armCache.getOrPut(deviceId) {
+        val name = runCatching {
+            android.view.InputDevice.getDevice(deviceId)?.name.orEmpty()
+        }.getOrDefault("")
+        val arm = when {
+            name.startsWith("cyttsp5") -> ARM_RIGHT
+            name.startsWith("cyttsp6") -> ARM_LEFT
+            else -> ARM_UNKNOWN
+        }
+        Log.i(TAG, "pad device $deviceId = '$name' -> ${armName(arm)}")
+        arm
+    }
+
+    private fun armName(arm: Int) = when (arm) {
+        ARM_RIGHT -> "RIGHT"; ARM_LEFT -> "LEFT"; else -> "UNKNOWN"
+    }
+
+    // Left-pad gesture state, tracked apart from the right pad's: the two arms
+    // can be touched at once, and one shared set of down-coordinates would let
+    // a finger resting on one arm cancel the tap being made on the other.
+    private var lDownAt = 0L
+    private var lDownX = 0f
+    private var lDownY = 0f
+    private var lMoved = false
+
     private var lastTapUp = 0L
     private var tapStreak = 0
     private var downX = 0f
@@ -102,6 +198,15 @@ class MainActivity : Activity() {
             layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
         content.addView(hud)
+
+        // Above the video on purpose — see PadCursor. Hidden until a double
+        // tap summons it, so the resting mirror is still an uncluttered
+        // picture rather than a desktop with a pointer parked on it.
+        cursor = PadCursor(this).apply {
+            layoutParams = FrameLayout.LayoutParams(PadCursor.SIZE, PadCursor.SIZE)
+            visibility = View.GONE
+        }
+        content.addView(cursor)
 
         // A transient line for the one thing the HUD cannot say once the
         // mirror is live: "your taps won't land until you enable input on the
@@ -328,43 +433,48 @@ class MainActivity : Activity() {
         // HERE as motion events, not as key presses. Track the gesture in BOTH
         // states — over the settings page too — so the triple-tap that OPENED
         // the page can also CLOSE it.
+        if (armOf(ev.deviceId) == ARM_LEFT) return leftArm(ev)
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.x; downY = ev.y; downAt = SystemClock.uptimeMillis()
                 lastX = ev.x; lastY = ev.y
                 totalDx = 0f; totalDy = 0f
                 dragging = false; heldFired = false
-                if (!settings.isShowing) ui.postDelayed(holdClick, HOLD_MS)
+                // No hold timer any more: press-and-hold belongs to the X3
+                // OS, and two owners for one gesture is how it ends up
+                // firing unpredictably. Clicking is mouse mode's job now.
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.x - lastX
                 val dy = ev.y - lastY
                 totalDx += dx; totalDy += dy
                 lastX = ev.x; lastY = ev.y
-                if (!dragging && kotlin.math.hypot(totalDx, totalDy) > SLOP) {
-                    dragging = true
-                    ui.removeCallbacks(holdClick)   // a moving finger is not a hold
-                }
-                // Sideways only slides the aim; vertical is saved for the
-                // scroll committed on release.
-                if (!settings.isShowing && dragging &&
-                    kotlin.math.abs(totalDx) > kotlin.math.abs(totalDy)
-                ) {
-                    moveCursor(dx * Prefs.speed(this), 0f)
+                if (!dragging && kotlin.math.hypot(totalDx, totalDy) > SLOP) dragging = true
+                // In mouse mode the pad IS the pointer, in both axes — which
+                // is new: the aim point used to move only sideways, so it was
+                // pinned to one horizontal line across the middle of the
+                // screen and could never reach anything above or below it.
+                // Outside mouse mode nothing happens until release, where the
+                // whole gesture is read at once as a pan.
+                if (!settings.isShowing && dragging && mouseMode) {
+                    moveCursor(dx * Prefs.speed(this), dy * Prefs.speed(this))
+                    touchedMouse()
+                    edgePull()
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                ui.removeCallbacks(holdClick)
-                val heldAlready = heldFired
                 val wasDragging = dragging
-                val vertical = kotlin.math.abs(totalDy) > kotlin.math.abs(totalDx)
-                val tap = !wasDragging && !heldAlready &&
-                    SystemClock.uptimeMillis() - downAt < TAP_MS
+                val tap = !wasDragging && SystemClock.uptimeMillis() - downAt < TAP_MS
                 dragging = false; heldFired = false
-                if (!settings.isShowing && wasDragging && vertical &&
-                    kotlin.math.abs(totalDy) >= SCROLL_MIN
+                // A drag pans the phone — in WHICHEVER direction it went. The
+                // horizontal axis used to be spent nudging an invisible aim
+                // point; panning is what the wearer actually reaches for.
+                // In mouse mode the same drag already moved the pointer, so it
+                // must not also throw the page around underneath it.
+                if (!settings.isShowing && wasDragging && !mouseMode &&
+                    kotlin.math.hypot(totalDx, totalDy) >= SCROLL_MIN
                 ) {
-                    sendScroll(totalDy)
+                    sendPan(totalDx, totalDy)
                     return true
                 }
                 // onPadTap returns true when the third tap toggled the page;
@@ -377,12 +487,38 @@ class MainActivity : Activity() {
         return if (settings.isShowing) super.dispatchTouchEvent(ev) else true
     }
 
-    /** Press-and-hold: the click that tap used to be. */
-    private val holdClick = Runnable {
-        if (dragging || settings.isShowing) return@Runnable
-        heldFired = true
-        sendTap(false)
-        flashNotice("click")
+    /**
+     * The LEFT pad. One job: cancel.
+     *
+     * Only the tap is bound, and deliberately so — a left-arm SWIPE is the X3
+     * OS volume control, and the app still receives it (verified: the event
+     * arrives here even while the OS acts on it). Binding anything to that
+     * gesture would mean the wearer silently changes their volume every time
+     * they use it, so the left pad's swipe is left strictly alone.
+     *
+     * Cancel is deliberately one gesture for everything rather than one per
+     * thing to cancel: whatever is running — a pointer, an errand, both — this
+     * stops it, and there is nothing to remember at the moment you most want
+     * something to just stop.
+     */
+    private fun leftArm(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lDownAt = SystemClock.uptimeMillis(); lDownX = ev.x; lDownY = ev.y
+                lMoved = false
+            }
+            MotionEvent.ACTION_MOVE ->
+                if (kotlin.math.hypot(ev.x - lDownX, ev.y - lDownY) > SLOP) lMoved = true
+            MotionEvent.ACTION_UP -> {
+                if (!lMoved && SystemClock.uptimeMillis() - lDownAt < TAP_MS) {
+                    val had = mouseMode
+                    if (had) exitMouseMode()
+                    agent?.exit()
+                    flashNotice(if (had) "cursor off" else "stop")
+                }
+            }
+        }
+        return true
     }
 
     /**
@@ -411,6 +547,69 @@ class MainActivity : Activity() {
      * drag down the middle of the picture: swiping UP on the pad pushes the
      * content up, which is what the same finger would do on the phone itself.
      */
+    /**
+     * One pad swipe becomes one pan of the phone, on whichever axis the
+     * gesture was mostly along.
+     *
+     * DIRECT MANIPULATION, matching what the finger would do on the glass:
+     * swipe up and the page goes up (so the view scrolls down), swipe right
+     * and the page goes right. The vertical half already behaved this way, so
+     * nothing about scrolling changes — the horizontal half simply follows the
+     * same rule instead of being spent on an invisible aim point.
+     *
+     * The synthesized swipe is kept away from the screen edges. Android reads
+     * a horizontal drag that STARTS at an edge as the system back gesture, so
+     * a pan left near the border would navigate back instead of moving the
+     * page — which looks like a random bug rather than a boundary.
+     */
+    private fun sendPan(padDx: Float, padDy: Float) {
+        val l = link ?: return
+        val horizontal = kotlin.math.abs(padDx) > kotlin.math.abs(padDy)
+        val travel = if (horizontal) padDx else padDy
+        val extent = (if (horizontal) VIEW_W else VIEW_H).toFloat()
+        val frac = (kotlin.math.abs(travel) / extent * Prefs.speed(this) * 1.6f)
+            .coerceIn(0.18f, 0.62f)
+        val mid = 0.5f
+        // Travel NEGATIVE means up or left on the pad; the content should go
+        // the same way, so the drag runs from the far side back toward it.
+        val from = (if (travel < 0) mid + frac / 2f else mid - frac / 2f)
+            .coerceIn(EDGE_SAFE, 1f - EDGE_SAFE)
+        val to = (if (travel < 0) mid - frac / 2f else mid + frac / 2f)
+            .coerceIn(EDGE_SAFE, 1f - EDGE_SAFE)
+        if (horizontal) l.swipe(from, mid, to, mid, 260) else l.swipe(mid, from, mid, to, 260)
+    }
+
+    /**
+     * Pointer at the border pulls the page along with it.
+     *
+     * Without this the pointer simply stops at the edge of a screen that may
+     * be a page long, and the wearer has to leave mouse mode, pan, and come
+     * back — three gestures to continue one movement. Throttled, because a
+     * move event arrives every few milliseconds and each pull is a real drag
+     * on the phone.
+     */
+    private fun edgePull() {
+        val r = videoRect() ?: return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastEdgePullAt < EDGE_PULL_MS) return
+        val dx = when {
+            cx <= r[0] + EDGE_PULL_PX -> -1f
+            cx >= r[0] + r[2] - EDGE_PULL_PX -> 1f
+            else -> 0f
+        }
+        val dy = when {
+            cy <= r[1] + EDGE_PULL_PX -> -1f
+            cy >= r[1] + r[3] - EDGE_PULL_PX -> 1f
+            else -> 0f
+        }
+        if (dx == 0f && dy == 0f) return
+        lastEdgePullAt = now
+        // A modest, fixed nudge rather than a gesture-sized throw: this fires
+        // repeatedly while the pointer rests at the border, and a full-size
+        // pan each time would rocket the page away.
+        sendPan(dx * EDGE_PULL_STEP, dy * EDGE_PULL_STEP)
+    }
+
     private fun sendScroll(padDy: Float) {
         val l = link ?: return
         // Pad travel maps to a fraction of the screen, capped so one flick
@@ -432,6 +631,8 @@ class MainActivity : Activity() {
         val isTap = event.keyCode == KeyEvent.KEYCODE_BUTTON_A ||
             event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
             event.keyCode == KeyEvent.KEYCODE_ENTER
+        Log.i(TAG, "pad KEY code=${event.keyCode} action=${event.action} " +
+            "arm=${armName(armOf(event.deviceId))} dev=${event.deviceId}")
         if (!isTap) return super.dispatchKeyEvent(event)
         if (event.action == KeyEvent.ACTION_UP) onPadTap()
         return true
@@ -440,8 +641,13 @@ class MainActivity : Activity() {
     /** Returns true if this tap completed the triple and toggled the settings page. */
     private fun onPadTap(): Boolean {
         val now = SystemClock.uptimeMillis()
-        tapStreak = if (now - lastTapUp < MULTI_MS) tapStreak + 1 else 1
+        val gap = now - lastTapUp
+        tapStreak = if (gap < MULTI_MS) tapStreak + 1 else 1
         lastTapUp = now
+        // gap is the number that decides whether two taps are a double. If
+        // real taps land just outside MULTI_MS the wearer gets two singles and
+        // no cursor, so measure it rather than guess at the constant.
+        Log.i(TAG, "pad tap gap=${gap}ms streak=$tapStreak (window=${MULTI_MS}ms) mouse=$mouseMode")
         ui.removeCallbacksAndMessages(TOKEN)
         if (tapStreak >= 3) {
             tapStreak = 0
@@ -457,8 +663,21 @@ class MainActivity : Activity() {
         val streak = tapStreak
         ui.postAtTime({
             when (streak) {
-                1 -> agent?.activate()   // ask about this screen
-                2 -> agent?.exit()       // stop / dismiss
+                // In mouse mode a single tap CLICKS. Stopping the agent moved
+                // to the left pad, which frees the double tap for the pointer
+                // — and cancel is better placed on its own arm anyway, since
+                // it is the gesture you reach for when something is going
+                // wrong and you do not want to think about counting taps.
+                1 -> if (mouseMode) {
+                    Log.i(TAG, "commit: click at cursor"); touchedMouse(); sendTap(false)
+                } else {
+                    Log.i(TAG, "commit: agent"); agent?.activate()
+                }
+                2 -> if (mouseMode) {
+                    Log.i(TAG, "commit: cursor off"); exitMouseMode()
+                } else {
+                    Log.i(TAG, "commit: cursor ON"); enterMouseMode()
+                }
             }
             tapStreak = 0
         }, TOKEN, SystemClock.uptimeMillis() + MULTI_MS)
@@ -495,14 +714,23 @@ class MainActivity : Activity() {
     }
 
     private fun moveCursor(dx: Float, dy: Float) {
-        // Position only — nothing is drawn. The tap reads cx/cy to place the
-        // click; the wearer aims by the phone's response, not a dot.
-        cx = (cx + dx).coerceIn(0f, VIEW_W - 1f)
-        cy = (cy + dy).coerceIn(0f, VIEW_H - 1f)
+        // Clamped to the PICTURE, not to the viewport. The letterbox bars are
+        // not part of the phone's screen, so a pointer parked out there would
+        // map to the nearest edge pixel and click something the wearer is not
+        // pointing at.
+        val r = videoRect()
+        if (r != null) {
+            cx = (cx + dx).coerceIn(r[0], r[0] + r[2] - 1f)
+            cy = (cy + dy).coerceIn(r[1], r[1] + r[3] - 1f)
+        } else {
+            cx = (cx + dx).coerceIn(0f, VIEW_W - 1f)
+            cy = (cy + dy).coerceIn(0f, VIEW_H - 1f)
+        }
+        placeCursor()
     }
 
     override fun onDestroy() {
-        hud.stop(); ui.removeCallbacks(hideNotice); ui.removeCallbacks(holdClick)
+        hud.stop(); ui.removeCallbacks(hideNotice); ui.removeCallbacks(mouseTimeout)
         agent?.destroy(); agent = null
         link?.stop(); discovery?.stop(); super.onDestroy()
     }
@@ -515,10 +743,34 @@ class MainActivity : Activity() {
         private const val SLOP = 3f
         private const val TAP_MS = 300L
         private const val MULTI_MS = 260L
-        /** Hold this long without moving and the pad clicks at the aim point. */
-        private const val HOLD_MS = 550L
+        /** Mouse mode goes away after this long untouched. */
+        private const val MOUSE_IDLE_MS = 4_000L
+        /** Pointer this close to the picture's border starts pulling the page. */
+        private const val EDGE_PULL_PX = 12f
+        /** Least time between two edge pulls, so resting at the border is not a flood. */
+        private const val EDGE_PULL_MS = 420L
+        /** Pad-equivalent travel one edge pull is worth. */
+        private const val EDGE_PULL_STEP = 60f
+        /**
+         * Keep synthesized swipes this far in from the screen edge. A
+         * horizontal drag STARTING at the border is Android's back gesture,
+         * not a pan.
+         */
+        private const val EDGE_SAFE = 0.12f
         /** Pad travel that counts as a scroll rather than a wobble. */
         private const val SCROLL_MIN = 14f
+
+        /**
+         * The temple pads. Verified on the reference pair with getevent:
+         * cyttsp5 = /dev/input/event2 = the RIGHT arm, cyttsp6 =
+         * /dev/input/event4 = the LEFT. Matched on the controller's name
+         * because Android's device ids are not stable across a reboot.
+         */
+        private const val ARM_UNKNOWN = 0
+        private const val ARM_RIGHT = 1
+        private const val ARM_LEFT = 2
+
+        private const val TAG = "X3MiraPad"
         private val TOKEN = Any()
     }
 }
