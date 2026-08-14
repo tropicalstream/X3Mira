@@ -269,15 +269,25 @@ object AgentVoice {
                     )
                     .addFormDataPart("temperature", "0")
                     .build()
-                val req = Request.Builder()
-                    .url("$BASE/audio/transcriptions")
-                    .header("Authorization", "Bearer ${groqKey(context)}")
-                    .post(body)
-                    .build()
-                http.newCall(req).execute().use { resp ->
-                    val raw = resp.body?.string().orEmpty()
-                    Log.d(TAG, "STT HTTP ${resp.code} (${audio.length()}b): ${raw.take(140)}")
-                    if (!resp.isSuccessful) {
+                // Flattened to bytes so it can cross the link. A multipart body
+                // is a builder, not a payload, and the phone needs the actual
+                // octets plus the boundary that describes them — so the
+                // content type comes from the body itself rather than being
+                // written out by hand, which is how a boundary mismatch
+                // becomes a 400 nobody can explain.
+                val flat = okio.Buffer().also { body.writeTo(it) }.readByteArray()
+                LinkNet.execute(
+                    url = "$BASE/audio/transcriptions",
+                    method = "POST",
+                    headers = mapOf("content-type" to body.contentType().toString()),
+                    body = flat
+                ).let { resp ->
+                    val raw = resp.text()
+                    Log.d(
+                        TAG,
+                        "STT HTTP ${resp.code} via=${resp.viaPhone} (${audio.length()}b): ${raw.take(140)}"
+                    )
+                    if (!resp.ok) {
                         errMsg = when (resp.code) {
                             401, 403 -> "Groq rejected the key."
                             429 -> "Groq rate limit — wait a moment."

@@ -66,11 +66,17 @@ class DexLink(
     fun start(surface: Surface) {
         if (running) return
         running = true
+        current = this
         thread(name = "dexlink") { run(surface) }
     }
 
     fun stop() {
         running = false
+        if (current === this) current = null
+        // Anyone blocked on a reply would otherwise wait out its full
+        // timeout against a socket that is already gone.
+        waiting.values.forEach { it.offer(Reply(0, ByteArray(0))) }
+        waiting.clear()
         runCatching { sender.shutdownNow() }
         runCatching { sock?.close() }
         runCatching { decoder?.stop(); decoder?.release() }
@@ -154,6 +160,15 @@ class DexLink(
                 val nbuf = ByteArray(nlen)
                 inp.readFully(nbuf)
                 onNotif(String(nbuf, Charsets.UTF_8))
+                continue
+            }
+            if (magic == MAGIC_REPLY) {
+                val id = inp.readInt()
+                val status = inp.readInt()
+                val blen = inp.readInt()
+                val buf = ByteArray(blen)
+                inp.readFully(buf)
+                deliver(id, status, buf)
                 continue
             }
             if (magic == MAGIC_HUDCFG) {
@@ -282,6 +297,82 @@ class DexLink(
     /** Launch an installed app by the name a person would call it. */
     fun openApp(name: String) = send { it.writeByte('A'.code); it.writeUTF(name) }
 
+    // ── Request / reply ──────────────────────────────────────────────
+    //
+    // Everything above is fire-and-forget: the glasses say "tap there" and
+    // never learn whether anything happened. That was survivable for a tap
+    // and is not for the two things below.
+    //
+    // The agent's model calls are made FROM THE GLASSES today, which means
+    // the eyewear needs its own route to the internet — so away from a
+    // router the phone must become a hotspot, and every request is then
+    // tethered traffic that carriers commonly throttle separately from
+    // on-device traffic. The phone is already holding a cellular connection
+    // and already has the whole calling apparatus. Handing it the request
+    // over the socket that is ALREADY carrying 4 Mbps of video costs a
+    // millisecond-scale local hop and removes the glasses' need for
+    // internet altogether.
+    //
+    // Correlated by id because several can be in flight: an errand can be
+    // transcribing while a previous hop's vision call is still returning,
+    // and a reply that arrived on a first-come basis would be handed to
+    // whichever caller happened to be waiting.
+
+    class Reply(val status: Int, val body: ByteArray)
+
+    private val nextId = java.util.concurrent.atomic.AtomicInteger(1)
+    private val waiting = java.util.concurrent.ConcurrentHashMap<
+        Int, java.util.concurrent.ArrayBlockingQueue<Reply>>()
+
+    /**
+     * Ask the PHONE to perform an HTTPS request and hand back the response.
+     * Blocking; null means the link could not carry it and the caller should
+     * fall back to going out directly.
+     */
+    fun httpViaPhone(
+        url: String,
+        method: String,
+        headersJson: String,
+        body: ByteArray,
+        timeoutMs: Long = 60_000L
+    ): Reply? {
+        if (out == null) return null
+        val id = nextId.getAndIncrement()
+        val box = java.util.concurrent.ArrayBlockingQueue<Reply>(1)
+        waiting[id] = box
+        try {
+            send {
+                it.writeByte('Q'.code)
+                it.writeInt(id)
+                it.writeInt(RPC_HTTP)
+                it.writeUTF(url)
+                it.writeUTF(method)
+                it.writeUTF(headersJson)
+                it.writeInt(body.size)
+                it.write(body)
+            }
+            return box.poll(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (t: Throwable) {
+            Log.w(TAG, "rpc failed: ${t.message}")
+            return null
+        } finally {
+            waiting.remove(id)
+        }
+    }
+
+    /** Hand a reply to whoever asked for it. Called from the read loop. */
+    private fun deliver(id: Int, status: Int, body: ByteArray) {
+        val box = waiting.remove(id)
+        if (box == null) {
+            // Late: the caller already timed out and walked away. Dropping it
+            // is correct — the alternative is a queue that grows forever with
+            // answers nobody is listening for.
+            Log.w(TAG, "reply $id arrived with nobody waiting")
+            return
+        }
+        box.offer(Reply(status, body))
+    }
+
     /**
      * Type into whatever the phone currently has focused, optionally pressing
      * the keyboard's action key afterwards. The phone refuses this outright
@@ -317,6 +408,21 @@ class DexLink(
         const val MAGIC_AUDIO = 0xDEC0DE02.toInt()
         const val MAGIC_NOTIF = 0xDEC0DE03.toInt()
         const val MAGIC_HUDCFG = 0xDEC0DE04.toInt()
+        const val MAGIC_REPLY = 0xDEC0DE05.toInt()
+
+        /** RPC kinds carried by the 'Q' verb. */
+        const val RPC_HTTP = 1
+
+        /**
+         * The live link, for callers that are nowhere near the Activity.
+         *
+         * The agent's HTTP goes through three different classes, none of
+         * which holds a DexLink, and threading one into each would mean
+         * three constructors changed to express "use the socket if there is
+         * one". This is the seam instead.
+         */
+        @Volatile
+        var current: DexLink? = null
         const val ACTION_BACK = 1
         const val ACTION_HOME = 2
         const val ACTION_RECENTS = 3

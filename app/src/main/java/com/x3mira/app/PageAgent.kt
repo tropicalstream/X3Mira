@@ -573,18 +573,21 @@ class PageAgent(
         var answer: String? = null
         lastFail = "I couldn't reach the model."
         for (model in MODELS) {
-            val req = Request.Builder()
-                .url("$GEMINI_BASE/models/$model:generateContent")
-                // Header auth, not ?key= — a key in the query string ends up
-                // in logs and proxies.
-                .header("x-goog-api-key", key)
-                .post(body.toRequestBody("application/json".toMediaType()))
-                .build()
             val outcome = runCatching {
-                http.newCall(req).execute().use { resp ->
-                    val text = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) {
-                        Log.w(TAG, "vision $model HTTP ${resp.code}: ${text.take(200)}")
+                // Through LinkNet, which prefers to hand this to the PHONE:
+                // the frame is a JPEG of the wearer's screen and the phone has
+                // the connection that is actually reliable outdoors. No
+                // credential goes over the link — the phone attaches its own,
+                // so the glasses never carry a usable key.
+                LinkNet.execute(
+                    url = "$GEMINI_BASE/models/$model:generateContent",
+                    method = "POST",
+                    headers = mapOf("content-type" to "application/json"),
+                    body = body.toString().toByteArray(Charsets.UTF_8)
+                ).let { resp ->
+                    val text = resp.text()
+                    if (!resp.ok) {
+                        Log.w(TAG, "vision $model HTTP ${resp.code} via=${resp.viaPhone}: ${text.take(200)}")
                         // Busy or rate-limited is worth another model; a 400 or
                         // a 403 is our own request and retrying cannot help.
                         lastFail = when (resp.code) {
@@ -592,7 +595,7 @@ class PageAgent(
                             401, 403 -> "The API key was rejected."
                             else -> "The model returned an error."
                         }
-                        return@use null
+                        return@let null
                     }
                     // EVERY part, joined — not parts[0]. Gemini is free to
                     // split one reply across several parts, and when it does
