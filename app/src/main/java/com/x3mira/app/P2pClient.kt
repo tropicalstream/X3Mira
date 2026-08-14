@@ -65,7 +65,29 @@ class P2pClient(
                 override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
                     if (intent?.action != WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION) return
                     Log.i(TAG, "connection-changed broadcast")
-                    if (host == null && running) askInfo(0)
+                    if (host == null) {
+                        if (running) askInfo(0)
+                        return
+                    }
+                    // A host is HELD, so this broadcast may be the group
+                    // DISSOLVING — and an address from a dead group is worse
+                    // than none: the link dials it forever, the sweeps stay
+                    // stopped because host looks satisfied, and the wearer
+                    // watches "reconnecting" for the rest of the session.
+                    // Seen live when the phone re-formed its group on a new
+                    // channel and these glasses never followed.
+                    val m = manager ?: return
+                    val c = channel ?: return
+                    runCatching {
+                        m.requestConnectionInfo(c) { info ->
+                            if (info == null || !info.groupFormed) {
+                                Log.i(TAG, "group dissolved — clearing host, resuming hunt")
+                                host = null
+                                connecting = false
+                                if (running) sweep()
+                            }
+                        }
+                    }
                 }
             }
             context.registerReceiver(
