@@ -106,7 +106,11 @@ class SettingsPanel(
     private fun refresh() {
         val w = Prefs.width(activity)
         resRow.text = "Resolution:  $w px wide" + if (w == 720) "   (best)" else ""
-        speedRow.text = "Aim speed:  ${Prefs.speed(activity)}x"
+        // Panning only now: the POINTER's speed is set on the phone, where
+        // there is a real screen to judge it on. One number used to drive both
+        // and they want opposite things — a pan should cover ground, a pointer
+        // should settle on a target.
+        speedRow.text = "Pan speed:  ${Prefs.speed(activity)}x"
         hostRow.text = "Phone:  ${Prefs.host(activity)}"
     }
 
