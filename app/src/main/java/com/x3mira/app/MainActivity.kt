@@ -318,11 +318,14 @@ class MainActivity : Activity() {
         // takes effect without a restart.
         if (!Prefs.p2p(this)) { p2p?.stop(); p2p = null }
         else if (p2p == null) p2p = P2pClient(this) { addr ->
-            // A group formed while we were dialling something else: reconnect
-            // now rather than at the next retry, so joining the group is felt
-            // immediately instead of up to a retry period later.
-            Log.i(TAG, "p2p host $addr — reconnecting the link")
-            ui.post { link?.stop() }
+            // NOTHING to do but note it. The link's own retry loop re-reads
+            // hostProvider on every attempt, so the group address is picked up
+            // within a retry period by itself. The previous version "helped"
+            // by calling link.stop() to reconnect immediately — but nothing
+            // restarts a stopped link except a new surface, so the moment the
+            // group formed the mirror died for good, three lines after the
+            // log celebrated the address it would never dial.
+            Log.i(TAG, "p2p host $addr — the link will dial it on its next retry")
         }.also { it.start() }
         // ORDER MATTERS. A formed Wi-Fi Direct group is the most specific
         // answer there is — the phone is right there and owns the address —
