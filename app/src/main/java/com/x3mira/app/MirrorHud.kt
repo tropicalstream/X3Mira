@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.View
 import java.util.Date
 
@@ -127,12 +128,78 @@ class MirrorHud(context: Context) : View(context) {
     /** Avatar is shown whenever the agent is set up, so the wearer knows it is there. */
     @Volatile var agentEnabled = true; private set
 
-    private var animPhase = 0f
+    // ── The avatar's animator ────────────────────────────────────────
+    // Separate from the once-a-second clock beat on purpose. The figure can
+    // type, and typing is MOTION: at one frame a second the fingers are drawn
+    // in a new position each time and read as a static hand that occasionally
+    // teleports. This runs only while she is actually doing something, so an
+    // idle HUD still costs one repaint a second.
+    private var animStartMs = 0L
+    private var animating = false
+    private var animFrameMs = ANIM_FRAME_MS
+
+    private val animTick = object : Runnable {
+        override fun run() {
+            // Re-decide every frame rather than trusting the flag set when the
+            // loop started: nothing publishes an event for "the errand just
+            // ended", so a loop that stopped only on notification would repaint
+            // at 30fps forever against a mirror the wearer is trying to read.
+            if (!animating || !AssistantState.wantsAnimation(agentState)) {
+                animating = false
+                animStartMs = 0L
+                invalidate()
+                return
+            }
+            invalidate()
+            postDelayed(this, animFrameMs)
+        }
+    }
+
+    /**
+     * 0..1 sawtooth over [ANIM_PERIOD_MS], from the CLOCK rather than counted
+     * per draw. Incrementing a phase each frame ties her speed to the repaint
+     * rate, which is how the hands ended up on a twenty-second cycle: the
+     * figure was advanced 0.05 per draw and the only thing drawing it was the
+     * one-a-second clock tick.
+     */
+    private fun animPhase(): Float {
+        if (!animating) return 0f
+        val dt = SystemClock.uptimeMillis() - animStartMs
+        return (dt % ANIM_PERIOD_MS).toFloat() / ANIM_PERIOD_MS
+    }
+
+    /**
+     * Start, stop, or re-rate the animator to match what the agent is doing.
+     *
+     * The rate changes without the loop stopping — she starts speaking
+     * mid-errand — so a rate change has to re-post too, or the fingers keep
+     * running at the dots' lazy 12fps. Typing and speech get the fast rate for
+     * the same reason: both track something the wearer reads as continuous.
+     */
+    private fun syncAnimator() {
+        val wants = agentEnabled && AssistantState.wantsAnimation(agentState)
+        val rate = if (AssistantState.hasTalking(agentState) ||
+            AssistantState.hasAgentSpeaking(agentState) ||
+            AssistantState.hasAgent(agentState)
+        ) ANIM_FRAME_TALK_MS else ANIM_FRAME_MS
+        if (wants == animating && rate == animFrameMs) return
+        animating = wants
+        animFrameMs = rate
+        removeCallbacks(animTick)
+        if (wants) {
+            if (animStartMs == 0L) animStartMs = SystemClock.uptimeMillis()
+            post(animTick)
+        } else {
+            animStartMs = 0L
+            invalidate()
+        }
+    }
 
     fun setAgentEnabled(on: Boolean): Boolean {
         if (agentEnabled == on) return false
         val before = bottomBandPx()
         agentEnabled = on
+        syncAnimator()
         invalidate()
         return before != bottomBandPx()
     }
@@ -142,6 +209,7 @@ class MirrorHud(context: Context) : View(context) {
         if (agentState == state) return false
         val before = bottomBandPx()
         agentState = state
+        syncAnimator()      // she only moves while there is something to move for
         invalidate()
         return before != bottomBandPx()
     }
@@ -226,7 +294,11 @@ class MirrorHud(context: Context) : View(context) {
     }
 
     /** Called when the mirror goes live: video covers us, so stop breathing. */
-    fun stop() { ui.removeCallbacks(tick) }
+    fun stop() {
+        ui.removeCallbacks(tick)
+        animating = false
+        removeCallbacks(animTick)
+    }
     fun startTicking() { ui.removeCallbacks(tick); ui.post(tick) }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
@@ -337,7 +409,6 @@ class MirrorHud(context: Context) : View(context) {
         // Idle sits dim; an active state brightens her, so a glance at the
         // corner answers "is she listening / thinking / talking".
         val brightness = if (agentState == AssistantState.IDLE) 0.35f else 0.85f
-        animPhase = (animPhase + 0.05f) % 1f
         // CLIPPED TO HER BAND. AssistantFigure's ink runs past the nominal
         // size — she has a keyboard below the face and thinking-dots above —
         // so a band sized from the text alone would let her spill onto the
@@ -352,7 +423,7 @@ class MirrorHud(context: Context) : View(context) {
                 cy = cy,
                 size = size,
                 state = agentState,
-                phase = animPhase,
+                phase = animPhase(),
                 level = 0f,
                 agentLevel = 0f,
                 paint = avatarPaint,
@@ -499,5 +570,17 @@ class MirrorHud(context: Context) : View(context) {
         return (level * 100f / scale).toInt()
     }
 
-    companion object { private const val WORDMARK = "X3MIRA" }
+    companion object {
+        private const val WORDMARK = "X3MIRA"
+        /** Dots and swells: 12fps is plenty for three circles breathing. */
+        private const val ANIM_FRAME_MS = 80L
+        /**
+         * Typing and speech. Both track something the wearer reads as
+         * continuous — fingers pressing keys, a mouth following audio — and at
+         * 12fps typing looks like stamping rather than typing.
+         */
+        private const val ANIM_FRAME_TALK_MS = 33L
+        /** One full pass of the phase sawtooth. */
+        private const val ANIM_PERIOD_MS = 2_200L
+    }
 }
