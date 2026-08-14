@@ -71,6 +71,17 @@ These are worth knowing before you file a bug:
   sizes from the settings page.
 * **Small or repeated targets** are where the agent's visual grounding is
   weakest. Double-tap the pad stops an errand at any point.
+* **Sound has two possible paths, and running both is an echo.** X3Mira
+  streams the phone's audio over the same socket as the picture, but the
+  glasses can also be paired to the phone over Bluetooth — and A2DP is
+  already feeding the same speakers, a couple of hundred milliseconds later.
+  The result does not sound like a duplicate, it sounds like slight reverb,
+  which is why it gets blamed on the codec. The phone's **Sound to glasses**
+  setting defaults to Auto and simply does not send a second copy while
+  Bluetooth is carrying the first. Bluetooth is the path that wins, because
+  it also carries what `AudioPlaybackCapture` is forbidden to touch: a live
+  voice conversation runs as `USAGE_VOICE_COMMUNICATION` and cannot be
+  mirrored at all.
 
 ---
 
