@@ -395,6 +395,43 @@ class DexLink(
     }
 
     /**
+     * Type, and WAIT to hear whether it landed.
+     *
+     * Fire-and-forget was the wrong shape for this one action. Every other
+     * command either obviously worked or obviously did not — a tap that missed
+     * still moved something — but text going nowhere looks exactly like text
+     * arriving: the screen is unchanged either way. So the agent believed it
+     * had typed, looked, saw nothing, sent the same words again and hit its own
+     * repeat guard, which reads as giving up.
+     *
+     * Returns null if the link could not carry it at all, which the caller
+     * must treat as failure rather than success.
+     */
+    fun typeAndConfirm(text: String, submit: Boolean, timeoutMs: Long = 8_000L): Reply? {
+        if (out == null) return null
+        val id = nextId.getAndIncrement()
+        val box = java.util.concurrent.ArrayBlockingQueue<Reply>(1)
+        waiting[id] = box
+        try {
+            send {
+                it.writeByte('Q'.code)
+                it.writeInt(id)
+                it.writeInt(RPC_TYPE)
+                it.writeUTF(text)                       // envelope's url slot
+                it.writeUTF(if (submit) "1" else "0")   // ...method slot
+                it.writeUTF("")
+                it.writeInt(0)
+            }
+            return box.poll(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (t: Throwable) {
+            Log.w(TAG, "type rpc failed: ${t.message}")
+            return null
+        } finally {
+            waiting.remove(id)
+        }
+    }
+
+    /**
      * Outbound pointer work, OFF the main thread.
      *
      * Every one of these is called from a gesture callback, which is the UI
@@ -424,6 +461,7 @@ class DexLink(
 
         /** RPC kinds carried by the 'Q' verb. */
         const val RPC_HTTP = 1
+        const val RPC_TYPE = 2
 
         /**
          * The live link, for callers that are nowhere near the Activity.
