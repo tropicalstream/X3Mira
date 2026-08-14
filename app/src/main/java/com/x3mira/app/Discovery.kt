@@ -1,4 +1,4 @@
-package com.x3dex.app
+package com.x3mira.app
 
 import android.content.Context
 import android.net.nsd.NsdManager
@@ -10,7 +10,7 @@ import android.util.Log
  *
  * The whole reason this exists: a phone's DHCP address changes, and a
  * hardcoded IP in the glasses dies the moment it does. The phone advertises
- * a "_dexprobe._tcp" service; this discovers it and keeps the current
+ * a "_x3mira._tcp" service; this discovers it and keeps the current
  * address fresh, so the link reconnects wherever the phone lands. The
  * manually-set address in settings stays as a fallback for networks that
  * block mDNS.
@@ -72,6 +72,6 @@ class Discovery(context: Context) {
 
     companion object {
         private const val TAG = "X3Dex"
-        const val SERVICE_TYPE = "_dexprobe._tcp."
+        const val SERVICE_TYPE = "_x3mira._tcp."
     }
 }

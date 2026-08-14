@@ -1,4 +1,4 @@
-package com.x3dex.app
+package com.x3mira.app
 
 import android.content.Context
 import android.graphics.Canvas

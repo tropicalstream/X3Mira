@@ -3,10 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 android {
-    namespace = "com.x3dex.app"
+    namespace = "com.x3mira.app"
     compileSdk = 34
     defaultConfig {
-        applicationId = "com.x3dex.app"
+        applicationId = "com.x3mira.app"
         minSdk = 29
         targetSdk = 32
         versionCode = 1
@@ -21,4 +21,5 @@ android {
 }
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

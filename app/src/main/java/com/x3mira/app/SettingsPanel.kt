@@ -1,4 +1,4 @@
-package com.x3dex.app
+package com.x3mira.app
 
 import android.app.Activity
 import android.graphics.Color
@@ -43,7 +43,7 @@ class SettingsPanel(
     val isShowing: Boolean get() = view.visibility == View.VISIBLE
 
     init {
-        col.addView(label("X3Dex settings", 15f, 0xFF7FDBFF.toInt(), 0, 6))
+        col.addView(label("X3Mira settings", 15f, 0xFF7FDBFF.toInt(), 0, 6))
 
         resRow = row {
             val cur = Prefs.width(activity)
@@ -71,8 +71,14 @@ class SettingsPanel(
         }
 
         col.addView(label(
-            "Trackpad moves the pointer · tap = click · double = long press · triple = this page",
-            9.5f, 0xCCFFFFFF.toInt(), 8, 6
+            // The pad is the agent's now: a tap asks about the screen rather
+            // than clicking it, and clicking moved to press-and-hold.
+            "tap = ask agent · double = stop · triple = this page",
+            9.5f, 0xCCFFFFFF.toInt(), 8, 2
+        ))
+        col.addView(label(
+            "swipe up/down = scroll phone · hold = click · sideways = aim",
+            9.5f, 0xCCFFFFFF.toInt(), 0, 6
         ))
 
         val nav = LinearLayout(activity).apply {
@@ -100,7 +106,7 @@ class SettingsPanel(
     private fun refresh() {
         val w = Prefs.width(activity)
         resRow.text = "Resolution:  $w px wide" + if (w == 720) "   (best)" else ""
-        speedRow.text = "Cursor speed:  ${Prefs.speed(activity)}x"
+        speedRow.text = "Aim speed:  ${Prefs.speed(activity)}x"
         hostRow.text = "Phone:  ${Prefs.host(activity)}"
     }
 

@@ -1,4 +1,4 @@
-package com.x3dex.app
+package com.x3mira.app
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -38,11 +38,20 @@ class DexLink(
     private val port: Int = 7391,
     private val onState: (String) -> Unit,
     private val onGeometry: (w: Int, h: Int, inputReady: Boolean) -> Unit,
-    private val onStats: (fps: Float, latencyMs: Float) -> Unit
+    private val onStats: (fps: Float, latencyMs: Float) -> Unit,
+    private val onNotif: (String) -> Unit = {},
+    private val onHudCfg: (
+        notifLines: Int, readoutMode: Int, fontPct: Int,
+        agentOn: Boolean, a11yContext: Boolean
+    ) -> Unit = { _, _, _, _, _ -> }
 ) {
     @Volatile private var running = false
     @Volatile private var sock: Socket? = null
     @Volatile private var out: DataOutputStream? = null
+    /** Single worker for the return channel; see [send]. */
+    private val sender = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "dexlink-send").apply { isDaemon = true }
+    }
     private var decoder: MediaCodec? = null
     private var audioTrack: AudioTrack? = null
 
@@ -62,6 +71,7 @@ class DexLink(
 
     fun stop() {
         running = false
+        runCatching { sender.shutdownNow() }
         runCatching { sock?.close() }
         runCatching { decoder?.stop(); decoder?.release() }
         decoder = null
@@ -137,6 +147,24 @@ class DexLink(
                 // exactly the pacing we want — the audio clock throttles
                 // itself and never runs ahead of the speaker.
                 runCatching { audioTrack?.write(abuf, 0, alen) }
+                continue
+            }
+            if (magic == MAGIC_NOTIF) {
+                val nlen = inp.readInt()
+                val nbuf = ByteArray(nlen)
+                inp.readFully(nbuf)
+                onNotif(String(nbuf, Charsets.UTF_8))
+                continue
+            }
+            if (magic == MAGIC_HUDCFG) {
+                // Five ints, read in order and ALL consumed even if a callback
+                // ignores one — a short read here desyncs the whole stream.
+                val lines = inp.readInt()
+                val readout = inp.readInt()
+                val font = inp.readInt()
+                val agentOn = inp.readInt()
+                val a11y = inp.readInt()
+                onHudCfg(lines, readout, font, agentOn == 1, a11y == 1)
                 continue
             }
             if (magic != MAGIC_FRAME) throw IllegalStateException("desync")
@@ -239,9 +267,32 @@ class DexLink(
 
     fun global(action: Int) = send { it.writeByte('G'.code); it.writeInt(action) }
 
-    private inline fun send(block: (DataOutputStream) -> Unit) {
-        val o = out ?: return
-        runCatching { synchronized(o) { block(o); o.flush() } }
+    /**
+     * Ask the phone to open a web address. Not a pointer gesture at all, but
+     * it travels the same channel: the agent can press things and scroll them,
+     * yet it cannot type, so reaching a named site by driving the address bar
+     * was never possible. The phone opens it directly instead — and vets the
+     * scheme at that end, since the address comes out of a vision model.
+     */
+    fun openUrl(url: String) = send { it.writeByte('U'.code); it.writeUTF(url) }
+
+    /**
+     * Outbound pointer work, OFF the main thread.
+     *
+     * Every one of these is called from a gesture callback, which is the UI
+     * thread, and a socket write there is a NetworkOnMainThreadException —
+     * whose message is null, so the old runCatching swallowed it into a
+     * silent no-op and the pad appeared to do nothing at all. One worker
+     * also serialises the writes, so two gestures can never interleave
+     * halfway through a message.
+     */
+    private fun send(block: (DataOutputStream) -> Unit) {
+        val o = out
+        if (o == null) { Log.w(TAG, "send dropped: not connected"); return }
+        sender.execute {
+            runCatching { synchronized(o) { block(o); o.flush() } }
+                .onFailure { Log.w(TAG, "send failed: ${it.javaClass.simpleName} ${it.message}") }
+        }
     }
 
     companion object {
@@ -249,6 +300,8 @@ class DexLink(
         const val MAGIC_HELLO = 0xDEC0DE00.toInt()
         const val MAGIC_FRAME = 0xDEC0DE01.toInt()
         const val MAGIC_AUDIO = 0xDEC0DE02.toInt()
+        const val MAGIC_NOTIF = 0xDEC0DE03.toInt()
+        const val MAGIC_HUDCFG = 0xDEC0DE04.toInt()
         const val ACTION_BACK = 1
         const val ACTION_HOME = 2
         const val ACTION_RECENTS = 3
