@@ -560,7 +560,15 @@ class PageAgent(
                 "generationConfig",
                 JSONObject()
                     .put("temperature", 0.2)
-                    .put("maxOutputTokens", 400)
+                    // 400 was set when the reply was say + action + box_2d.
+                    // Every action added since put another optional field in
+                    // the schema, and the model fills them whether or not the
+                    // chosen action wants them — so a "type" answer arrived
+                    // carrying a whole invented url and ran out of budget
+                    // mid-string. A truncated reply is not partial, it is
+                    // unparseable: it fell to the raw-text fallback and the
+                    // wearer was told their answer came back garbled.
+                    .put("maxOutputTokens", 1024)
                     .put("responseMimeType", "application/json")
                     .put("responseSchema", schema)
             )
@@ -761,6 +769,11 @@ class PageAgent(
             "If they are only asking a question, use \"none\" and put the answer in say.\n" +
             "If the thing they named is not visible, use \"none\" and say so in one " +
             "sentence rather than guessing at a position.\n" +
+            "\n" +
+            "Fill ONLY the field your chosen action needs — box_2d for tap, text and " +
+            "submit for type, app for open_app, url for open_url — and leave the rest " +
+            "out entirely. Inventing a url on a type, or a box on an open_app, is wasted " +
+            "output that can run the reply out of room before it is finished.\n" +
             "\n" +
             "say is spoken aloud: two sentences at most, no markdown, no lists, no preamble."
     }
