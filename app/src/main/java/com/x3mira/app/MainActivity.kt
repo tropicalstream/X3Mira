@@ -483,7 +483,15 @@ class MainActivity : Activity() {
         // HERE as motion events, not as key presses. Track the gesture in BOTH
         // states — over the settings page too — so the triple-tap that OPENED
         // the page can also CLOSE it.
-        if (armOf(ev.deviceId) == ARM_LEFT) return leftArm(ev)
+        if (armOf(ev.deviceId) == ARM_LEFT) {
+            // EXCEPT over the settings page, where the left pad has to reach
+            // the panel like any other touch. Its job out here is "cancel",
+            // which has nothing to cancel on a settings screen — so swallowing
+            // it there just leaves the wearer holding a page they cannot
+            // navigate with the arm they happen to be using.
+            if (settings.isShowing) return super.dispatchTouchEvent(ev)
+            return leftArm(ev)
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.x; downY = ev.y; downAt = SystemClock.uptimeMillis()

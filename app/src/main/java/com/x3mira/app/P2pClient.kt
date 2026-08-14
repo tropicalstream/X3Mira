@@ -50,9 +50,10 @@ class P2pClient(
             return
         }
         val c = runCatching { m.initialize(context, Looper.getMainLooper(), null) }.getOrNull()
-            ?: return
+        if (c == null) { Log.w(TAG, "p2p initialize returned no channel"); return }
         manager = m; channel = c
         running = true
+        Log.i(TAG, "p2p client starting — hunting for $INSTANCE")
         hunt()
     }
 
@@ -65,6 +66,7 @@ class P2pClient(
                     instance: String?, registrationType: String?, device: WifiP2pDevice?
                 ) {
                     if (instance == null || device == null) return
+                    Log.i(TAG, "saw service '$instance' on ${device.deviceName}")
                     if (!instance.startsWith(INSTANCE, ignoreCase = true)) return
                     if (connecting || host != null) return
                     connecting = true
@@ -98,7 +100,13 @@ class P2pClient(
             }
             m.setDnsSdResponseListeners(c, onService, onTxt)
 
-            val req = WifiP2pDnsSdServiceRequest.newInstance(INSTANCE, SERVICE)
+            // UNFILTERED on purpose. Asking for a specific instance+service
+            // means the framework only surfaces an exact match, and the exact
+            // string it compares against is not the one written here — the
+            // record ends up fully qualified (…_tcp.local.). Ask for
+            // everything and match in the listener, which is where the name is
+            // already being checked anyway.
+            val req = WifiP2pDnsSdServiceRequest.newInstance()
             request = req
             m.addServiceRequest(c, req, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { sweep() }
@@ -116,7 +124,12 @@ class P2pClient(
         val m = manager ?: return
         val c = channel ?: return
         if (!running || host != null) return
-        runCatching { m.discoverServices(c, null) }
+        runCatching {
+            m.discoverServices(c, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { Log.i(TAG, "discovery sweep started") }
+                override fun onFailure(reason: Int) { Log.w(TAG, "discovery failed: $reason") }
+            })
+        }
         ui.postDelayed({ sweep() }, SWEEP_MS)
     }
 
