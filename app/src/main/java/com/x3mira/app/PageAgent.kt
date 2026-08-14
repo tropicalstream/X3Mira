@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.util.Log
@@ -62,8 +63,30 @@ class PageAgent(
     private val onTap: (fx: Float, fy: Float) -> Unit = { _, _ -> },
     private val onScroll: (dir: Int) -> Unit = { },
     /** Open a web address on the phone — the one thing gestures cannot do. */
-    private val onOpenUrl: (String) -> Unit = { }
+    private val onOpenUrl: (String) -> Unit = { },
+    /** Type into the phone's focused field. Only offered when the wearer allows it. */
+    private val onType: (text: String, submit: Boolean) -> Unit = { _, _ -> },
+    /** Launch an installed app by name — "open Spotify" is not a URL. */
+    private val onOpenApp: (String) -> Unit = { },
+    /**
+     * A TINY copy of the mirror, for "has the screen changed yet?".
+     *
+     * Deliberately not [frameProvider]: that returns the decoder's full
+     * 720x1536 so the model can read labels, and polling one of those every
+     * couple of hundred milliseconds would copy megabytes to answer a yes/no
+     * question.
+     */
+    private val probeProvider: () -> Bitmap? = { null }
 ) {
+    /**
+     * Whether "type" is in the model's vocabulary at all.
+     *
+     * Set from the phone's setting rather than always offered, because an
+     * action the phone will refuse is worse than one that does not exist: the
+     * model spends a hop on it, sees nothing change, and — reasonably — tries
+     * again.
+     */
+    @Volatile var typingEnabled = false
     private val main = Handler(Looper.getMainLooper())
     private val recorder = AgentVoice.Recorder(context)
 
@@ -198,6 +221,7 @@ class PageAgent(
         val mine = generation
         tapped.clear()                     // a fresh errand may press anywhere
         opened.clear()                     // ...and revisit a site it visited last time
+        typed.clear()
         var shot = frame
         var hop = 0
         while (hop < MAX_HOPS) {
@@ -206,10 +230,21 @@ class PageAgent(
             runCatching { shot?.recycle() }
             shot = null
             if (mine != generation) return
-            if (obj == null) { finish(lastFail, ok = false); return }
+            if (obj == null) {
+                // Was invisible before: a model turn that failed and one that
+                // politely declined both ended the errand through finish()
+                // with nothing logged, so "the agent did nothing" looked
+                // identical to "the agent never ran".
+                Log.w(TAG, "hop $hop FAILED: $lastFail")
+                finish(lastFail, ok = false); return
+            }
             val say = obj.optString("say").trim().ifEmpty { "Done." }
             val action = obj.optString("action")
+            Log.i(TAG, "hop $hop -> action='$action' say='${say.take(90)}'")
             if (action == "none" || action.isEmpty()) { finish(say, ok = true); return }
+            // Fingerprint BEFORE acting: "has it changed" needs the thing it
+            // changed from, and after the action it is already too late to ask.
+            val beforeSig = probe()
             when (perform(action, obj, say)) {
                 Act.SETTLED -> { finish(say, ok = true); return }
                 Act.CANNOT -> { finish(say, ok = false); return }
@@ -218,10 +253,14 @@ class PageAgent(
             hop++
             if (hop >= MAX_HOPS) break
             // Let the phone actually move before looking again, then take a
-            // fresh frame — the whole point of a hop. A page load is a much
-            // bigger event than a tap: look too soon and the model is handed a
-            // blank white browser and reports that the site never opened.
-            Thread.sleep(if (action == "open_url") LOAD_MS else SETTLE_MS)
+            // fresh frame — the whole point of a hop. Waited out by WATCHING
+            // rather than by sleeping a guess: a page load or an app cold start
+            // is a far bigger event than a tap, and one constant cannot be
+            // right for both without being wrong for one.
+            awaitSettled(
+                beforeSig,
+                if (action == "open_url" || action == "open_app") LOAD_MS else TRANSITION_MS
+            )
             if (mine != generation) return
             shot = grabFrame()
             if (shot == null) { finish("I lost sight of the screen.", ok = false); return }
@@ -240,6 +279,69 @@ class PageAgent(
         return if (latch.await(2, TimeUnit.SECONDS)) out else null
     }
 
+    /** A cheap fingerprint of what is on screen. Equal means "looks the same". */
+    private fun probe(): Long? {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var out: Bitmap? = null
+        main.post {
+            out = runCatching { probeProvider() }.getOrNull()
+            latch.countDown()
+        }
+        if (!latch.await(1, TimeUnit.SECONDS)) return null
+        val bmp = out ?: return null
+        var h = 1125899906842597L
+        runCatching {
+            for (y in 0 until bmp.height step 2) {
+                for (x in 0 until bmp.width step 2) h = h * 31 + bmp.getPixel(x, y)
+            }
+        }
+        runCatching { bmp.recycle() }
+        return h
+    }
+
+    /**
+     * Wait for the phone to FINISH moving, rather than sleeping a fixed guess.
+     *
+     * The fixed sleep was the cause of the worst class of failure this agent
+     * had. 900ms is right for a scroll and far too short for a screen
+     * transition — tapping a search bar and looking that soon returns the
+     * screen from BEFORE the tap, so the model concludes its tap missed and
+     * taps again, and the repeat guard then ends the errand as "already done".
+     * The wearer sees an agent that gives up on step two of three, and nothing
+     * in the log says why, because from the agent's side every action
+     * succeeded.
+     *
+     * So: wait for the picture to change, then wait for it to hold still. The
+     * hold matters as much as the change — a screen mid-transition is a half
+     * drawn menu, and asking a vision model to act on that is how it presses
+     * something that is still sliding into place.
+     *
+     * Capped, and a cap that expires is not an error: some actions genuinely
+     * change nothing visible, and the errand should carry on and let the model
+     * judge from the frame.
+     */
+    private fun awaitSettled(before: Long?, capMs: Long) {
+        if (before == null) { Thread.sleep(SETTLE_MS); return }
+        val start = SystemClock.uptimeMillis()
+        var changed = false
+        var lastSig = before
+        var stillSince = 0L
+        while (SystemClock.uptimeMillis() - start < capMs) {
+            Thread.sleep(PROBE_MS)
+            val sig = probe() ?: continue
+            if (!changed) {
+                if (sig != before) { changed = true; lastSig = sig; stillSince = SystemClock.uptimeMillis() }
+                continue
+            }
+            if (sig != lastSig) { lastSig = sig; stillSince = SystemClock.uptimeMillis(); continue }
+            if (SystemClock.uptimeMillis() - stillSince >= STILL_MS) {
+                Log.i(TAG, "settled after ${SystemClock.uptimeMillis() - start}ms")
+                return
+            }
+        }
+        Log.i(TAG, "settle cap hit after ${capMs}ms (changed=$changed)")
+    }
+
     /**
      * Every place this errand has pressed, so it cannot press one twice.
      *
@@ -253,6 +355,9 @@ class PageAgent(
 
     /** Sites already opened this errand, compared by [siteOf]. */
     private val opened = HashSet<String>()
+
+    /** Text already typed this errand. */
+    private val typed = HashSet<String>()
 
     /**
      * The identity of a destination, for "have I already been here?".
@@ -302,6 +407,38 @@ class PageAgent(
         }
         "scroll_down" -> { Log.i(TAG, "hop scroll down: $say"); main.post { onText(say); onScroll(1) }; Act.ACTED }
         "scroll_up" -> { Log.i(TAG, "hop scroll up: $say"); main.post { onText(say); onScroll(-1) }; Act.ACTED }
+        "type" -> {
+            val text = obj.optString("text")
+            if (text.isEmpty()) Act.CANNOT
+            else {
+                // Typing the SAME thing twice means the first attempt did not
+                // land — no field focused, or the setting is off — and asking
+                // again will fail identically. Same reasoning as the tap and
+                // open guards: repetition is never progress.
+                val submit = obj.optBoolean("submit", true)
+                if (!typed.add(text)) {
+                    Log.i(TAG, "hop type repeated — already sent that text")
+                    Act.SETTLED
+                } else {
+                    Log.i(TAG, "hop type ${text.length} chars submit=$submit")
+                    main.post { onText(say); onType(text, submit) }
+                    Act.ACTED
+                }
+            }
+        }
+        "open_app" -> {
+            val app = obj.optString("app").trim()
+            if (app.isEmpty()) Act.CANNOT
+            else if (!opened.add("app:" + app.lowercase())) {
+                Log.i(TAG, "hop open_app repeated $app — already there")
+                Act.SETTLED
+            } else {
+                Log.i(TAG, "hop open_app $app")
+                tapped.clear()          // new app, new screen, new targets
+                main.post { onText(say); onOpenApp(app) }
+                Act.ACTED
+            }
+        }
         "open_url" -> {
             val url = obj.optString("url").trim()
             val same = siteOf(url)
@@ -357,7 +494,17 @@ class PageAgent(
             "\n\nYou have already taken $hop step(s) on this errand and this image is " +
             "the screen AS IT IS NOW. If the goal is reached, or you can now answer, use " +
             "action \"none\" and give the answer in say. Otherwise take the next step."
-        parts.put(JSONObject().put("text", PROMPT + hopNote + "\n\nErrand: " + question))
+        val typingNote = if (!typingEnabled) "" else
+            "\n\nYou CAN type. To search or fill a box: \"tap\" it first so it has the " +
+            "cursor, then on the next turn use action \"type\" with the words in text — " +
+            "it goes into whatever field is focused, so the tap has to land first. Set " +
+            "submit true to press Search/Go afterwards, which is almost always what a " +
+            "search wants; false only if there is another field to fill first. Type the " +
+            "whole phrase at once. Never tap letters on the on-screen keyboard: that is " +
+            "one turn per character and it will not finish."
+        parts.put(
+            JSONObject().put("text", PROMPT + typingNote + hopNote + "\n\nErrand: " + question)
+        )
         if (jpeg != null) {
             parts.put(
                 JSONObject().put(
@@ -382,13 +529,17 @@ class PageAgent(
                         "action", JSONObject().put("type", "STRING")
                             .put("enum", org.json.JSONArray()
                                 .put("none").put("tap").put("scroll_down")
-                                .put("scroll_up").put("open_url"))
+                                .put("scroll_up").put("open_url").put("open_app")
+                                .apply { if (typingEnabled) put("type") })
                     )
+                    .put("app", JSONObject().put("type", "STRING"))
                     // Going to a named site is not a gesture. Without this the
                     // model does the only thing its vocabulary allows — taps
                     // the address bar — and then stalls in front of a keyboard
                     // it has no way to use.
                     .put("url", JSONObject().put("type", "STRING"))
+                    .put("text", JSONObject().put("type", "STRING"))
+                    .put("submit", JSONObject().put("type", "BOOLEAN"))
                     // box_2d, in Gemini's own detection convention:
                     // [ymin, xmin, ymax, xmax] on a 0-1000 grid. The field
                     // NAME and the y-first order matter — asked for a generic
@@ -443,20 +594,41 @@ class PageAgent(
                         }
                         return@use null
                     }
+                    // EVERY part, joined — not parts[0]. Gemini is free to
+                    // split one reply across several parts, and when it does
+                    // the first is a fragment like {"say": . That parses as
+                    // nothing, falls through to the raw-text fallback below,
+                    // and the wearer hears their agent read out a piece of its
+                    // own JSON before the errand quietly stops.
                     JSONObject(text)
                         .optJSONArray("candidates")?.optJSONObject(0)
-                        ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
-                        ?.optString("text")?.trim()?.takeIf { it.isNotEmpty() }
+                        ?.optJSONObject("content")?.optJSONArray("parts")
+                        ?.let { arr ->
+                            buildString {
+                                for (i in 0 until arr.length()) {
+                                    append(arr.optJSONObject(i)?.optString("text").orEmpty())
+                                }
+                            }
+                        }?.trim()?.takeIf { it.isNotEmpty() }
                 }
             }.getOrElse { Log.w(TAG, "vision $model failed: ${it.message}"); null }
             if (outcome != null) { answer = outcome; break }
         }
 
         if (answer == null) return null
-        // A schema response is JSON; if it somehow is not, treat the whole
-        // reply as something to say and call the errand done.
-        return runCatching { JSONObject(answer) }.getOrNull()
-            ?: JSONObject().put("say", answer).put("action", "none")
+        runCatching { JSONObject(answer) }.getOrNull()?.let { return it }
+        // Not parseable. If it STARTS like JSON it is a broken schema reply,
+        // not prose, and reading it out would speak braces and quote marks at
+        // someone wearing the thing. Say something a person can act on and log
+        // the real text for whoever has to debug it.
+        if (answer.trimStart().startsWith("{")) {
+            Log.w(TAG, "unparseable schema reply: ${answer.take(160)}")
+            return JSONObject()
+                .put("say", "The model's reply came back garbled — ask me again.")
+                .put("action", "none")
+        }
+        // Genuine prose: treat the whole thing as the answer.
+        return JSONObject().put("say", answer).put("action", "none")
     }
 
     /** Cheap sample grid: true when every probe pixel is the same colour. */
@@ -512,8 +684,18 @@ class PageAgent(
         private const val MAX_HOPS = 10
         /** Two taps closer than this (fraction of the screen) are the same press. */
         private const val SAME_SPOT = 0.04f
-        /** Let the phone finish moving before looking at it again. */
+        /** Fallback wait when the mirror cannot be probed at all. */
         private const val SETTLE_MS = 900L
+        /** How often to re-fingerprint the screen while waiting for it to settle. */
+        private const val PROBE_MS = 150L
+        /** Unchanged for this long counts as "finished moving". */
+        private const val STILL_MS = 350L
+        /**
+         * Longest to wait on an ordinary action. Generous because the cost of
+         * waiting is a pause, and the cost of NOT waiting is the model acting
+         * on the previous screen — which reads as the agent giving up.
+         */
+        private const val TRANSITION_MS = 4_000L
         /**
          * A page load needs longer than a gesture: browser cold start, DNS,
          * render. Generous on purpose — look too soon and the model is handed
@@ -548,6 +730,11 @@ class PageAgent(
             "is wrong and will press the wrong thing. Put a short confirmation in say, " +
             "phrased as something you have just done — for example \"Tapping the 9:30 PM " +
             "showtime.\"\n" +
+            "If they name an APP to open — \"open Spotify\", \"go to Maps\" — use action " +
+            "\"open_app\" and put the name they said in app, spelled as it appears under " +
+            "the icon. This launches the real app on the phone. Do NOT send an app to " +
+            "open_url: spotify.com is the web player, which is not what they asked for, " +
+            "and do not answer that you cannot open apps, because you can.\n" +
             "If they name a WEBSITE to go to — \"open youtube.com\", \"go to Wikipedia\" — " +
             "use action \"open_url\" and put the full address in url, such as " +
             "\"https://www.youtube.com\". Do NOT tap the address bar: you cannot type, so " +

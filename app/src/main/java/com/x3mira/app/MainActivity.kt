@@ -59,20 +59,6 @@ class MainActivity : Activity() {
     private var cx = VIEW_W / 2f
     private var cy = VIEW_H / 2f
 
-    /**
-     * Which temple pad an event came from.
-     *
-     * The two arms are SEPARATE input devices on this hardware — verified with
-     * getevent: the right arm is cyttsp5 (/dev/input/event2) and the left is
-     * cyttsp6 (/dev/input/event4), each a 639x197 multitouch pad — so an event
-     * carries the arm in its device id and nothing extra is needed to tell
-     * them apart.
-     *
-     * Resolved by NAME rather than by the raw id. Android hands out input
-     * device ids at enumeration time and they are not stable across reboots or
-     * a hot-plug, so pinning arm = id 4 would work perfectly today and quietly
-     * swap the wearer's arms some morning after a restart.
-     */
     private lateinit var cursor: PadCursor
 
     /**
@@ -85,6 +71,23 @@ class MainActivity : Activity() {
     private var mouseMode = false
     private var lastMouseAt = 0L
     private var lastEdgePullAt = 0L
+
+    // The held-back pointer sample — see ACTION_MOVE.
+    private var pendDx = 0f
+    private var pendDy = 0f
+    private var pendHeld = false
+
+    /**
+     * Pointer speed, chosen on the PHONE and pushed over the link.
+     *
+     * Separate from Prefs.speed, which stays with panning. They were one
+     * number and should not have been: a pan wants to cover ground in a
+     * flick, a pointer wants to settle on a target, and tuning one to taste
+     * always made the other worse.
+     */
+    private var pointerPct = 80
+
+    private fun pointerSpeed() = POINTER_BASE * (pointerPct / 100f)
 
     private val mouseTimeout = Runnable {
         if (mouseMode && SystemClock.uptimeMillis() - lastMouseAt >= MOUSE_IDLE_MS) exitMouseMode()
@@ -128,6 +131,20 @@ class MainActivity : Activity() {
         cursor.layoutParams = lp
     }
 
+    /**
+     * Which temple pad an event came from.
+     *
+     * The two arms are SEPARATE input devices on this hardware — verified with
+     * getevent: the right arm is cyttsp5 (/dev/input/event2) and the left is
+     * cyttsp6 (/dev/input/event4), each a 639x197 multitouch pad — so an event
+     * carries the arm in its device id and nothing extra is needed to tell
+     * them apart.
+     *
+     * Resolved by NAME rather than by the raw id. Android hands out input
+     * device ids at enumeration time and they are not stable across reboots or
+     * a hot-plug, so pinning arm = id 4 would work perfectly today and quietly
+     * swap the wearer's arms some morning after a restart.
+     */
     private val armCache = HashMap<Int, Int>()
 
     private fun armOf(deviceId: Int): Int = armCache.getOrPut(deviceId) {
@@ -167,8 +184,6 @@ class MainActivity : Activity() {
     private var totalDy = 0f
     private var heldFired = false
     private var agent: PageAgent? = null
-    /** Phone-side opt-in; today the glasses only report it, vision is the eye. */
-    private var agentA11y = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -253,7 +268,15 @@ class MainActivity : Activity() {
             // tap goes straight through with no letterbox math.
             onTap = { fx, fy -> link?.tap(fx, fy) },
             onScroll = { dir -> sendAgentScroll(dir) },
-            onOpenUrl = { url -> link?.openUrl(url) }
+            onOpenUrl = { url -> link?.openUrl(url) },
+            onType = { text, submit -> link?.typeText(text, submit) },
+            onOpenApp = { name -> link?.openApp(name) },
+            // Tiny on purpose: this answers "has the picture changed?", not
+            // "what does it say", and it is sampled several times a second.
+            probeProvider = {
+                if (!video.isAvailable) null
+                else runCatching { video.getBitmap(48, 96) }.getOrNull()
+            }
         ).also { it.init() }
 
         settings = SettingsPanel(this) { applySettings() }
@@ -305,15 +328,20 @@ class MainActivity : Activity() {
             },
             onStats = { _, _ -> ui.post { goLive() } },
             onNotif = { s -> ui.post { hud.setNotif(s) } },
-            onHudCfg = { lines, readout, pct, agentOn, a11y ->
+            onHudCfg = { lines, readout, pct, agentOn, a11y, pointer ->
                 ui.post {
+                    pointerPct = pointer.coerceIn(20, 300)
                     // The wearer changed HUD or agent settings on the phone:
                     // apply, and if the reserved bands changed size, refit the
                     // video so mirror and HUD still never overlap.
                     var changed = hud.applyConfig(lines, readout, pct)
                     if (hud.setAgentEnabled(agentOn)) changed = true
                     if (!agentOn) agent?.exit()
-                    agentA11y = a11y
+                    // The wire's fifth flag is now "may the agent type" — the
+                    // old read-screen-text flag it replaced was assigned here
+                    // and read nowhere, so the setting did nothing whichever
+                    // way it was set.
+                    agent?.typingEnabled = a11y
                     if (changed) refit()
                 }
             }
@@ -457,7 +485,24 @@ class MainActivity : Activity() {
                 // Outside mouse mode nothing happens until release, where the
                 // whole gesture is read at once as a pan.
                 if (!settings.isShowing && dragging && mouseMode) {
-                    moveCursor(dx * Prefs.speed(this), dy * Prefs.speed(this))
+                    // ONE SAMPLE BEHIND, on purpose. A capacitive pad reports
+                    // the centroid of the contact patch, and as a finger lifts
+                    // that patch shrinks unevenly — so the last sample before
+                    // release is a lurch in whatever direction the fingertip
+                    // rolled, and the pointer jumped exactly when the wearer
+                    // stopped moving it. Holding each delta until the NEXT one
+                    // arrives means the final, dirty sample is simply never
+                    // applied: it is discarded on release. Costs one sample of
+                    // latency, around 8 ms, which is not perceptible.
+                    val s = pointerSpeed()
+                    if (pendHeld) moveCursor(pendDx * s, pendDy * s)
+                    // A real fingertip cannot cross the pad between two
+                    // samples; anything that big is a sensor glitch, not a
+                    // gesture, so it is dropped rather than smoothed.
+                    val glitch = kotlin.math.hypot(dx, dy) > MAX_STEP
+                    pendDx = if (glitch) 0f else dx
+                    pendDy = if (glitch) 0f else dy
+                    pendHeld = true
                     touchedMouse()
                     edgePull()
                 }
@@ -466,6 +511,7 @@ class MainActivity : Activity() {
                 val wasDragging = dragging
                 val tap = !wasDragging && SystemClock.uptimeMillis() - downAt < TAP_MS
                 dragging = false; heldFired = false
+                pendHeld = false        // drop the lift-off sample unapplied
                 // A drag pans the phone — in WHICHEVER direction it went. The
                 // horizontal axis used to be spent nudging an invisible aim
                 // point; panning is what the wearer actually reaches for.
@@ -745,6 +791,16 @@ class MainActivity : Activity() {
         private const val MULTI_MS = 260L
         /** Mouse mode goes away after this long untouched. */
         private const val MOUSE_IDLE_MS = 4_000L
+        /**
+         * Pointer speed at 100%. This is the old shared Prefs.speed default,
+         * so 100% reproduces exactly how the aim point used to travel and the
+         * phone's setting reads as a change from a known feel rather than
+         * from an arbitrary one. The default there is 80% — the pointer was
+         * too jumpy at full rate.
+         */
+        private const val POINTER_BASE = 2.5f
+        /** Bigger than this between two samples is a sensor glitch, not a finger. */
+        private const val MAX_STEP = 55f
         /** Pointer this close to the picture's border starts pulling the page. */
         private const val EDGE_PULL_PX = 12f
         /** Least time between two edge pulls, so resting at the border is not a flood. */

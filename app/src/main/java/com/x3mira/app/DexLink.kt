@@ -42,8 +42,8 @@ class DexLink(
     private val onNotif: (String) -> Unit = {},
     private val onHudCfg: (
         notifLines: Int, readoutMode: Int, fontPct: Int,
-        agentOn: Boolean, a11yContext: Boolean
-    ) -> Unit = { _, _, _, _, _ -> }
+        agentOn: Boolean, a11yContext: Boolean, pointerPct: Int
+    ) -> Unit = { _, _, _, _, _, _ -> }
 ) {
     @Volatile private var running = false
     @Volatile private var sock: Socket? = null
@@ -157,14 +157,17 @@ class DexLink(
                 continue
             }
             if (magic == MAGIC_HUDCFG) {
-                // Five ints, read in order and ALL consumed even if a callback
-                // ignores one — a short read here desyncs the whole stream.
+                // Six ints, read in order and ALL consumed even if a callback
+                // ignores one — a short read here desyncs the whole stream,
+                // which is also why both apps must be installed together when
+                // this message grows a field.
                 val lines = inp.readInt()
                 val readout = inp.readInt()
                 val font = inp.readInt()
                 val agentOn = inp.readInt()
                 val a11y = inp.readInt()
-                onHudCfg(lines, readout, font, agentOn == 1, a11y == 1)
+                val pointer = inp.readInt()
+                onHudCfg(lines, readout, font, agentOn == 1, a11y == 1, pointer)
                 continue
             }
             if (magic != MAGIC_FRAME) throw IllegalStateException("desync")
@@ -275,6 +278,18 @@ class DexLink(
      * scheme at that end, since the address comes out of a vision model.
      */
     fun openUrl(url: String) = send { it.writeByte('U'.code); it.writeUTF(url) }
+
+    /** Launch an installed app by the name a person would call it. */
+    fun openApp(name: String) = send { it.writeByte('A'.code); it.writeUTF(name) }
+
+    /**
+     * Type into whatever the phone currently has focused, optionally pressing
+     * the keyboard's action key afterwards. The phone refuses this outright
+     * unless the wearer has turned typing on, so the glasses may ask freely.
+     */
+    fun typeText(text: String, submit: Boolean) = send {
+        it.writeByte('X'.code); it.writeUTF(text); it.writeInt(if (submit) 1 else 0)
+    }
 
     /**
      * Outbound pointer work, OFF the main thread.
