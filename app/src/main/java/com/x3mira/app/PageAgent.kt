@@ -481,11 +481,25 @@ class PageAgent(
                 Log.w(TAG, "frame is uniform — asking without a picture")
                 null
             } else runCatching {
+                // SCALED AND SQUEEZED before upload. This image travels over
+                // whatever uplink the phone has, and on cellular that upload
+                // IS the hop time: at 85% quality and full decode size a frame
+                // ran ~200KB, and hops measured 30-50 seconds on a
+                // deprioritized MVNO uplink. Three-quarter scale at 60%
+                // quality reads the same to the model — UI labels survive —
+                // at roughly a third of the bytes.
+                val scaled = if (bmp.height > VISION_MAX_SIDE) {
+                    val f = VISION_MAX_SIDE.toFloat() / bmp.height
+                    Bitmap.createScaledBitmap(
+                        bmp, (bmp.width * f).toInt().coerceAtLeast(1), VISION_MAX_SIDE, true
+                    )
+                } else bmp
                 ByteArrayOutputStream().use { out ->
-                    // 85% of a half-native frame: small enough to be quick on
-                    // a phone hotspot, sharp enough to read UI labels.
-                    bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                    out.toByteArray()
+                    scaled.compress(Bitmap.CompressFormat.JPEG, VISION_QUALITY, out)
+                    if (scaled !== bmp) runCatching { scaled.recycle() }
+                    out.toByteArray().also {
+                        Log.i(TAG, "vision frame ${it.size / 1024}KB")
+                    }
                 }
             }.getOrNull()
         }
@@ -695,6 +709,14 @@ class PageAgent(
         private const val MAX_HOPS = 10
         /** Two taps closer than this (fraction of the screen) are the same press. */
         private const val SAME_SPOT = 0.04f
+        /**
+         * Vision upload budget: tallest side and JPEG quality. 1152x540-ish at
+         * 60 keeps a phone's UI labels legible to the model at about a third
+         * of the former bytes — and the bytes are the hop time on cellular.
+         */
+        private const val VISION_MAX_SIDE = 1152
+        private const val VISION_QUALITY = 60
+
         /** Fallback wait when the mirror cannot be probed at all. */
         private const val SETTLE_MS = 900L
         /** How often to re-fingerprint the screen while waiting for it to settle. */
@@ -722,10 +744,16 @@ class PageAgent(
          * they answer at all. Full Flash gives the best description and is the
          * one that 503s under load, so it leads and the lite models catch it.
          */
+        // LITE FIRST. Full Flash gives the best answer when it answers, but on
+        // a slow cellular uplink it was observed holding a request for 47
+        // seconds before returning 503 — the fallback chain then starts over,
+        // and one hop costs a minute. The lite models answer in seconds and
+        // have not been seen to 503 here; the same ordering lesson is already
+        // written on the phone's provider list.
         private val MODELS = listOf(
-            "gemini-2.5-flash",
+            "gemini-flash-lite-latest",
             "gemini-2.5-flash-lite",
-            "gemini-flash-lite-latest"
+            "gemini-2.5-flash"
         )
 
         private const val PROMPT =

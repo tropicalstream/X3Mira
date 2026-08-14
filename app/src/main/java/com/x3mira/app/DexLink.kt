@@ -297,6 +297,18 @@ class DexLink(
     /** Launch an installed app by the name a person would call it. */
     fun openApp(name: String) = send { it.writeByte('A'.code); it.writeUTF(name) }
 
+    /**
+     * Tell the phone which channel our infrastructure Wi-Fi occupies, 0 for
+     * none. The phone forms the NEXT P2P group there, so this one radio can
+     * serve its router and the mirror without time-slicing two channels —
+     * the difference between 2 fps video and 40.
+     *
+     * PROTOCOL NOTE: a phone that predates the 'F' verb drops the client on
+     * receiving it, so the phone app must always be updated before the
+     * glasses when this message is introduced.
+     */
+    fun reportStaFreq(hz: Int) = send { it.writeByte('F'.code); it.writeInt(hz) }
+
     // ── Request / reply ──────────────────────────────────────────────
     //
     // Everything above is fire-and-forget: the glasses say "tap there" and

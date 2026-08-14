@@ -349,6 +349,16 @@ class MainActivity : Activity() {
                     fitVideoToFrame(w, h)
                     goLive()
                     if (!input) flashNotice("Enable X3Mira input on the phone to click")
+                    // Report which channel our router association occupies, so
+                    // the phone can put the next group on it. After geometry
+                    // on purpose: the hello has been fully consumed, so this
+                    // is the first safe moment to speak on the return channel.
+                    val hz = runCatching {
+                        @Suppress("DEPRECATION")
+                        (getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager)
+                            .connectionInfo?.frequency ?: 0
+                    }.getOrDefault(0)
+                    link?.reportStaFreq(if (hz > 0) hz else 0)
                 }
             },
             onStats = { _, _ -> ui.post { goLive() } },
