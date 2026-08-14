@@ -64,8 +64,12 @@ class PageAgent(
     private val onScroll: (dir: Int) -> Unit = { },
     /** Open a web address on the phone — the one thing gestures cannot do. */
     private val onOpenUrl: (String) -> Unit = { },
-    /** Type into the phone's focused field. Only offered when the wearer allows it. */
-    private val onType: (text: String, submit: Boolean) -> Unit = { _, _ -> },
+    /**
+     * Type into the phone's focused field and WAIT for the verdict:
+     * (accepted, reason). Only offered when the wearer allows it.
+     */
+    private val onTypeConfirmed: (text: String, submit: Boolean) -> Pair<Boolean, String>? =
+        { _, _ -> null },
     /** Launch an installed app by name — "open Spotify" is not a URL. */
     private val onOpenApp: (String) -> Unit = { },
     /**
@@ -222,6 +226,7 @@ class PageAgent(
         tapped.clear()                     // a fresh errand may press anywhere
         opened.clear()                     // ...and revisit a site it visited last time
         typed.clear()
+        lastActionNote = null
         var shot = frame
         var hop = 0
         while (hop < MAX_HOPS) {
@@ -356,8 +361,18 @@ class PageAgent(
     /** Sites already opened this errand, compared by [siteOf]. */
     private val opened = HashSet<String>()
 
-    /** Text already typed this errand. */
+    /** Text already typed this errand — SUCCESSFULLY. */
     private val typed = HashSet<String>()
+
+    /**
+     * What went wrong with the last action, told to the model on the next hop.
+     *
+     * Without this the loop could only show the model a picture and hope it
+     * inferred the failure. A screen that did not change is ambiguous — the
+     * tap might have missed, the page might be slow, the text might have gone
+     * nowhere — and the model reliably guessed "try the same thing again".
+     */
+    @Volatile private var lastActionNote: String? = null
 
     /**
      * The identity of a destination, for "have I already been here?".
@@ -411,18 +426,39 @@ class PageAgent(
             val text = obj.optString("text")
             if (text.isEmpty()) Act.CANNOT
             else {
-                // Typing the SAME thing twice means the first attempt did not
-                // land — no field focused, or the setting is off — and asking
-                // again will fail identically. Same reasoning as the tap and
-                // open guards: repetition is never progress.
                 val submit = obj.optBoolean("submit", true)
-                if (!typed.add(text)) {
-                    Log.i(TAG, "hop type repeated — already sent that text")
+                // Re-sending text that ALREADY LANDED is never progress. Text
+                // that failed is a different matter entirely, and the two used
+                // to be indistinguishable here — which is why a type into an
+                // unfocused page ended the errand instead of correcting it.
+                if (text in typed) {
+                    Log.i(TAG, "hop type repeated — already typed that successfully")
                     Act.SETTLED
                 } else {
                     Log.i(TAG, "hop type ${text.length} chars submit=$submit")
-                    main.post { onText(say); onType(text, submit) }
-                    Act.ACTED
+                    main.post { onText(say) }
+                    val reply = onTypeConfirmed(text, submit)
+                    val ok = reply != null && reply.first
+                    val why = reply?.second.orEmpty()
+                    if (ok) {
+                        typed.add(text)
+                        Log.i(TAG, "hop type accepted")
+                        Act.ACTED
+                    } else {
+                        // NOT settled, and not remembered: the model gets told
+                        // what went wrong and can fix it — which for the usual
+                        // cause means tapping the field first.
+                        Log.w(TAG, "hop type REFUSED: $why")
+                        lastActionNote = if (why.isNotEmpty()) {
+                            "Your last \"type\" did NOT go in: $why. Tap the text " +
+                                "field first so it has the cursor, then type again."
+                        } else {
+                            "Your last \"type\" did not reach the phone. Tap the " +
+                                "field first, then type again."
+                        }
+                        main.post { onText("Nothing was focused — tapping first") }
+                        Act.ACTED
+                    }
                 }
             }
         }
@@ -509,15 +545,20 @@ class PageAgent(
             "the screen AS IT IS NOW. If the goal is reached, or you can now answer, use " +
             "action \"none\" and give the answer in say. Otherwise take the next step."
         val typingNote = if (!typingEnabled) "" else
-            "\n\nYou CAN type. To search or fill a box: \"tap\" it first so it has the " +
+            "\n\nYou CAN type. ALWAYS tap the field FIRST — a type with nothing focused " +
+            "goes nowhere and is wasted. To search or fill a box: \"tap\" it first so it has the " +
             "cursor, then on the next turn use action \"type\" with the words in text — " +
             "it goes into whatever field is focused, so the tap has to land first. Set " +
             "submit true to press Search/Go afterwards, which is almost always what a " +
             "search wants; false only if there is another field to fill first. Type the " +
             "whole phrase at once. Never tap letters on the on-screen keyboard: that is " +
             "one turn per character and it will not finish."
+        val failNote = lastActionNote?.let { "\n\nIMPORTANT: $it" }.orEmpty()
+        lastActionNote = null
         parts.put(
-            JSONObject().put("text", PROMPT + typingNote + hopNote + "\n\nErrand: " + question)
+            JSONObject().put(
+                "text", PROMPT + typingNote + hopNote + failNote + "\n\nErrand: " + question
+            )
         )
         if (jpeg != null) {
             parts.put(

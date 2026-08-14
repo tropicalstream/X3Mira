@@ -270,7 +270,13 @@ class MainActivity : Activity() {
             onTap = { fx, fy -> link?.tap(fx, fy) },
             onScroll = { dir -> sendAgentScroll(dir) },
             onOpenUrl = { url -> link?.openUrl(url) },
-            onType = { text, submit -> link?.typeText(text, submit) },
+            onTypeConfirmed = { text, submit ->
+                // Blocking on purpose: the agent's hop thread must know
+                // whether the words landed before it decides what to do next.
+                link?.typeAndConfirm(text, submit)?.let { r ->
+                    Pair(r.status == 1, String(r.body, Charsets.UTF_8))
+                }
+            },
             onOpenApp = { name -> link?.openApp(name) },
             // Tiny on purpose: this answers "has the picture changed?", not
             // "what does it say", and it is sampled several times a second.
