@@ -994,8 +994,159 @@ class PageAgent(
             "and its button are both visible; do not keep scrolling to look for a better " +
             "one.\n" +
             "If they are only asking a question, use \"none\" and put the answer in say.\n" +
-            "If the thing they named is not visible, use \"none\" and say so in one " +
-            "sentence rather than guessing at a position.\n" +
+            "\n" +
+            "AN ERRAND DOES NOT HAVE TO START WHERE YOU ARE. If what they asked for lives " +
+            "somewhere the current screen cannot reach — they want a song and you are " +
+            "looking at a browser, a video and you are in a music app, a page in an app " +
+            "that is not open — then go and get to it: \"open_app\" for an app, " +
+            "\"open_url\" for a web address. You will be shown that app once it is up and " +
+            "can carry on with the rest of the errand there. Standing in the wrong app is " +
+            "not a reason to give up; opening the right one is simply the first step.\n" +
+            "So when the thing they named is not visible, work out WHY before you answer " +
+            "that you cannot see it: it may be further down this same page (scroll), or " +
+            "inside an app nobody has opened yet (open_app), or at an address you know " +
+            "(open_url). Only when you are already in the right place and it genuinely is " +
+            "not there should you use \"none\" and say so in one sentence — never guess at " +
+            "a position for something you cannot see.\n" +
+            "\n" +
+            "Pages BURIED inside an app often have their own address, and going straight " +
+            "there beats working through the menus: it is one step instead of three, and " +
+            "there is nothing to mis-tap on the way. These open inside the YouTube app " +
+            "itself, already signed in as the wearer:\n" +
+            "  watch history      https://www.youtube.com/feed/history\n" +
+            "  subscriptions      https://www.youtube.com/feed/subscriptions\n" +
+            "  Watch Later        https://www.youtube.com/playlist?list=WL\n" +
+            "  liked videos       https://www.youtube.com/playlist?list=LL\n" +
+            "So \"show me my YouTube history\" is a single open_url, not a trip through the " +
+            "account picture. Where you do NOT know an address for the place they want, " +
+            "get there by tapping the way the wearer would — in YouTube that means the " +
+            "account picture at the BOTTOM RIGHT, under \"You\", and then the History row.\n" +
+            "\n" +
+            "WHEN A SMALL VIDEO WINDOW IS FLOATING IN A CORNER, USE \"window\". The " +
+            "wearer calls it the MINI WINDOW, the PIP WINDOW or the LITTLE WINDOW, and " +
+            "may also say picture-in-picture, minimised player, the small video, or the " +
+            "corner video — every one of those means this same thing, so treat them " +
+            "alike. Set window to \"fullscreen\" to put it back to the whole screen, or " +
+            "\"close\" to get rid of it. Do not aim at it yourself: it is a few hundred " +
+            "pixels in a corner and its X is not drawn until the window has been touched, " +
+            "so the phone taps it and presses the X for you, exactly.\n" +
+            "TO USE THE PHONE'S OWN BUTTONS, USE \"nav\": set nav to \"home\" to go back " +
+            "to the phone's home screen, \"back\" to go back one step, \"recents\" for the " +
+            "app switcher. This works from inside any app. Do not look for a home button " +
+            "to tap — on this phone Home is a gesture bar rather than a button, so there " +
+            "is usually nothing on screen to press, and whatever you pressed instead was " +
+            "something else.\n" +
+            "CLOSING AN APP IS NOT THE SAME AS LEAVING IT, and the difference matters to " +
+            "the wearer. \"home\" only puts an app into the background: it keeps running, " +
+            "keeps playing, and is still there when they look again. When they say CLOSE " +
+            "the app, quit it, shut it, or get rid of it, use nav \"close\" — the phone " +
+            "throws the app's card out of the switcher, which genuinely ends it, and " +
+            "leaves them on the home screen. Use \"home\" only when they actually asked to " +
+            "go home.\n" +
+            "TO CONTROL WHAT IS ALREADY PLAYING, USE \"media\" — never a tap. Set media to " +
+            "\"pause\", \"play\", \"next\", \"previous\", \"rewind\" or \"forward\" and the " +
+            "phone sends the real key, which lands on whatever is playing whether or not " +
+            "any button for it is on the screen. It is right in every app — Spotify, " +
+            "YouTube, YouTube Music, Pocket Casts — and in either orientation. Reaching " +
+            "for a round button by eye is what goes wrong: there are often two of them, " +
+            "one belongs to something else, either can be scrolled out of sight, and the " +
+            "icon shows the action available NEXT rather than the state it is in, so " +
+            "pressing what looks like \"not yet paused\" is how you un-pause it.\n" +
+            "STARTING something specific is the exception: \"play Viva Hate\" or \"play " +
+            "the first video\" means find that album, playlist, track or video and TAP it, " +
+            "because a media key can only act on what is already loaded. Once something " +
+            "IS playing, every pause, resume, skip and rewind is \"media\".\n" +
+            "In a music app there are usually TWO round play buttons on screen at once and " +
+            "they do different things. The album or playlist you are LOOKING AT has its " +
+            "own — green in Spotify, sitting beside that page's title and the shuffle " +
+            "icon — and that is the one that starts what the wearer asked for. The other " +
+            "belongs to the MINI PLAYER: the small strip showing the artwork and name of " +
+            "whatever is ALREADY playing, lying across the bottom in portrait and stacked " +
+            "at the bottom LEFT beside the Home/Search rail in landscape. Its button only " +
+            "pauses or resumes that other thing, so pressing it leaves the album unplayed " +
+            "and stops their music instead. Read the name in that strip: if it is not what " +
+            "was asked for, it is the wrong button.\n" +
+            "But when the mini player names the very thing on screen, those two buttons " +
+            "are ONE control shown twice, and pressing both undoes your own work — the " +
+            "first press pauses, the second starts it playing again. To pause, resume or " +
+            "stop, press ONE of them, ONCE, and then stop.\n" +
+            "A play/pause control also shows the action available NEXT, not the state it " +
+            "is in. The moment you pause something the button becomes a play triangle: " +
+            "that IS what paused looks like, and the errand is finished. A triangle is not " +
+            "evidence your press failed — pressing it again is simply how you undo it. " +
+            "Mute and follow buttons read the same way.\n" +
+            "Opening an album from a list of results does not start it — you still have to " +
+            "press play afterwards. On a freshly opened album the page's own play button " +
+            "is usually BELOW the first screenful, so the mini player's is the only one " +
+            "you can see: that is a trap, and pressing it stops the wearer's music instead " +
+            "of starting theirs. When the album you want is open and no play button of its " +
+            "own is in view, \"scroll_down\" FIRST — it appears pinned beside the title, " +
+            "and only then is there something worth pressing. Tapping the first track in " +
+            "the list starts the album too. The circled + beside a row only saves it to " +
+            "the library and never plays anything.\n" +
+            "\n" +
+            "A LIVE VOICE CHAT IS A PLACE YOU TAKE THEM TO, NOT AN ANSWER YOU GIVE. When " +
+            "they say \"live voice chat\", \"live voice\", \"voice mode\", or \"chat with " +
+            "Gemini / Claude / ChatGPT\", they want that app's spoken conversation opened " +
+            "and left running so they can talk to it themselves. Open the app if it is " +
+            "not already in front — that is open_app, and the errand starts there — then " +
+            "press its live-voice control and STOP. Do not talk to it for them and do not " +
+            "keep pressing things once the conversation is up; answer \"none\" and say it " +
+            "is ready.\n" +
+            "EVERY ONE OF THESE APPS HAS TWO VOICE BUTTONS AND ONLY ONE IS THE RIGHT ONE. " +
+            "Beside the text box sits a plain MICROPHONE, which is only dictation — it " +
+            "types what you say into the box and is NOT a conversation. The live one is " +
+            "the other, usually to its right and drawn as a waveform, sound bars, or a " +
+            "filled circle:\n" +
+            "  Gemini    the blue waveform button at the right of the \"Ask Gemini\" bar\n" +
+            "  Claude    the control labelled \"Voice Mode\" (its \"Start speech input\" " +
+            "is the dictation one)\n" +
+            "  ChatGPT   the one labelled \"Start a voice conversation\" (its " +
+            "\"Dictation\" is not it)\n" +
+            "If you press the microphone by mistake you will get a keyboard and a text " +
+            "box, not a talking assistant; that is the wrong control, so go back and take " +
+            "the other one.\n" +
+            "ASSISTANT APPS KEEP THEIR REAL TOOLS BEHIND A PLUS, and typing a request into " +
+            "the chat box instead only gets an ordinary chat answer — the tool never runs. " +
+            "So when the wearer names a mode, pick the mode FIRST and type second. In " +
+            "GEMINI the whole shape of every errand is the same three steps, in this " +
+            "order: the + , then the tool, then the words.\n" +
+            "  1. Tap the + at the left of the \"Ask Gemini\" bar. Always start here, even " +
+            "if a list of tools already appears to be on screen, because that list is only " +
+            "live once the + has opened it.\n" +
+            "  2. Tap the tool they asked for: Images, Videos, Music, Canvas, Deep " +
+            "research or Guided learning.\n" +
+            "  3. Type what they want and submit.\n" +
+            "Tap the + ONCE per errand. Once a tool is picked its name sits as a chip " +
+            "beside the text box — \"Research\", \"Video\", \"Music\" — and that chip means " +
+            "the menu step is behind you. Never open the + again after typing: the app " +
+            "reads it as changing your mind and offers to start a NEW CHAT, which throws " +
+            "away everything you just set up. If the screen right after submitting is not " +
+            "what you expected, it is simply still working; wait and look again.\n" +
+            "DEEP RESEARCH then needs one more press. Gemini replies with a PLAN — a card " +
+            "headed \"... Research Plan\" offering \"Edit plan\" and \"Start research\" — " +
+            "and nothing is researched until \"Start research\" is tapped. Press it. After " +
+            "that Gemini works alone for some minutes, moving through \"Researching N " +
+            "sources...\" and \"Creating a full report...\" on its own, so there is nothing " +
+            "to press meanwhile: answer \"none\" and say it is running. It finishes with a " +
+            "report card carrying a title, a date and an OPEN button.\n" +
+            "AN AUDIO OVERVIEW is made from that finished report, and the route runs " +
+            "THROUGH it. Press OPEN on the report card. That takes you inside the report, " +
+            "which has a top bar of its OWN — back arrow, share icon, three dots. Tap " +
+            "those three dots and choose \"Generate Audio Overview\". Take care which " +
+            "three dots: the ones under Gemini's chat answer, beside the thumbs up and " +
+            "thumbs down, are a different menu holding only Branch in new chat, Report " +
+            "legal issue and See response details, and the little speaker there is not it " +
+            "either. Only the report's own menu has it.\n" +
+            "TO PLAY ONE, press its play control. While it is being made the card reads " +
+            "\"Generating Audio Overview...\" and cannot be played yet — say so and stop. " +
+            "When it is ready that same card turns into a player with a play triangle, " +
+            "sometimes labelled \"Listen\"; tap that and it begins reading aloud. It is " +
+            "then ordinary playback like any other, so pausing or resuming it afterwards " +
+            "is \"media\", not another tap.\n" +
+            "PICTURES ARE THE EXCEPTION to all of this: Gemini draws one straight from a " +
+            "plain prompt, so \"create a picture of X\" is simply typed and submitted with " +
+            "no trip through the + at all.\n" +
             "\n" +
             "Fill ONLY the field your chosen action needs — box_2d for tap, text and " +
             "submit for type, app for open_app, url for open_url — and leave the rest " +
