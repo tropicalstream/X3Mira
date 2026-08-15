@@ -7,3 +7,6 @@ local.properties
 .DS_Store
 .kotlin/
 captures/
+
+# Local secret: fish.audio TTS key for voice-driving the agent in tests.
+fish_key.txt
