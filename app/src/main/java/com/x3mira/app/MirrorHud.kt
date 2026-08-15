@@ -224,8 +224,17 @@ class MirrorHud(context: Context) : View(context) {
     }
 
     /** Her box in the bottom band — square, band-height, right-aligned. */
-    private fun avatarPx(h: Float): Float =
-        if (!agentEnabled) 0f else readoutTextPx(h) * 1.9f
+    private fun avatarPx(h: Float, compact: Boolean = true): Float =
+        if (!agentEnabled) 0f else readoutDrawPx(h, compact) * 1.9f
+
+    /**
+     * The readout's DRAWN size, per mode: the landing screen renders it
+     * bigger than the overlay. One function, because the avatar measures the
+     * line to sit beside it — measuring at one size while drawing at another
+     * is exactly how she ended up parked on top of the battery percentage.
+     */
+    private fun readoutDrawPx(h: Float, compact: Boolean) =
+        if (compact) readoutTextPx(h) else h * 0.04f * fontScale
 
     /**
      * The bands the HUD owns, in view pixels. The video is fitted BETWEEN
@@ -318,7 +327,7 @@ class MirrorHud(context: Context) : View(context) {
             // say, because it is the thing the wearer just asked for.
             if (agentLine.isNotEmpty()) drawAgentLine(canvas, w, h) else drawNotif(canvas, w, h)
             drawReadout(canvas, w, h, compact = true)
-            drawAvatar(canvas, w, h)
+            drawAvatar(canvas, w, h, compact = true)
             return
         }
 
@@ -343,7 +352,7 @@ class MirrorHud(context: Context) : View(context) {
 
         if (agentLine.isNotEmpty()) drawAgentLine(canvas, w, h) else drawNotif(canvas, w, h)
         drawReadout(canvas, w, h, compact = false)
-        drawAvatar(canvas, w, h)
+        drawAvatar(canvas, w, h, compact = false)
     }
 
     /**
@@ -385,37 +394,49 @@ class MirrorHud(context: Context) : View(context) {
      * video was fitted around, so she never covers the mirror; the band grows
      * for her when the readout alone would be shorter than her face.
      */
-    private fun drawAvatar(canvas: Canvas, w: Float, h: Float) {
+    private fun drawAvatar(canvas: Canvas, w: Float, h: Float, compact: Boolean) {
         if (!agentEnabled) return
-        val size = avatarPx(h)
+        val size = avatarPx(h, compact)
         if (size <= 0f) return
         val band = bottomBandPx().toFloat()
         // Beside the readout, not out on the rim. She belongs to that line —
         // x3hub sits her at the end of it — and parked against the far edge
         // she read as a separate widget with a gulf of black between them.
         // Measured, not guessed, so she follows the text as it changes length
-        // and as the wearer changes readout mode or font size.
+        // and as the wearer changes readout mode or font size — measured AT
+        // THE SIZE THE MODE DRAWS IT: the landing readout is bigger than the
+        // overlay's, and measuring the small size while looking at the big
+        // one put her squarely on the battery percentage.
+        val textPx = readoutDrawPx(h, compact)
         val cx = if (readoutMode > 0) {
             // drawReadout has already left timeFill at the readout's size for
             // this frame, but set it anyway so ordering can never bite.
-            timeFill.textSize = readoutTextPx(h)
-            val textHalf = timeFill.measureText(readoutLine()) * 0.5f
+            timeFill.textSize = textPx
+            val line = drawnReadout.ifEmpty { readoutLine() }
+            val textHalf = timeFill.measureText(line) * 0.5f
             (w * 0.5f + textHalf + size * 0.62f).coerceAtMost(w - size * 0.55f)
         } else {
             // Nothing to sit beside: centre her where the line would have been.
             w * 0.5f
         }
-        val cy = h - band * 0.5f
+        // Her centre is the LINE's centre, from the same baseline arithmetic
+        // drawReadout uses for each mode — the compact band's midpoint, or
+        // the landing baseline lifted by the text's half-height.
+        val cy = if (compact) h - band * 0.5f
+        else h - h * 0.06f - textPx * 0.36f
         // Idle sits dim; an active state brightens her, so a glance at the
         // corner answers "is she listening / thinking / talking".
         val brightness = if (agentState == AssistantState.IDLE) 0.35f else 0.85f
-        // CLIPPED TO HER BAND. AssistantFigure's ink runs past the nominal
-        // size — she has a keyboard below the face and thinking-dots above —
-        // so a band sized from the text alone would let her spill onto the
-        // mirror. The clip makes "never covers the picture" a property of the
-        // canvas rather than a sum of glyph measurements that could drift.
+        // CLIPPED TO HER BAND — in OVERLAY only. AssistantFigure's ink runs
+        // past the nominal size — she has a keyboard below the face and
+        // thinking-dots above — so a band sized from the text alone would let
+        // her spill onto the mirror. The clip makes "never covers the
+        // picture" a property of the canvas rather than a sum of glyph
+        // measurements that could drift. The landing screen has no picture to
+        // protect, and its bigger line sits above the compact band — clipping
+        // to that band there is what beheaded her.
         canvas.save()
-        canvas.clipRect(0f, h - band, w, h)
+        if (compact) canvas.clipRect(0f, h - band, w, h)
         runCatching {
             AssistantFigure.draw(
                 canvas = canvas,
@@ -440,7 +461,11 @@ class MirrorHud(context: Context) : View(context) {
      * fitted around, so it can never sit on the mirror.
      */
     /** The readout as it will be drawn — one source of truth, so the avatar
-     *  can measure the very string the wearer is looking at. */
+     *  can measure the very string the wearer is looking at. drawReadout
+     *  caches its frame's string here because building it reads the LIVE
+     *  clock: built twice in one frame it can straddle a minute boundary,
+     *  drawing one string while the avatar measures another. */
+    @Volatile private var drawnReadout = ""
     private fun readoutLine(): String {
         val now = Date()
         val time = android.text.format.DateFormat.getTimeFormat(context).format(now)
@@ -455,7 +480,8 @@ class MirrorHud(context: Context) : View(context) {
     private fun drawReadout(canvas: Canvas, w: Float, h: Float, compact: Boolean) {
         if (readoutMode <= 0) return
         val line = readoutLine()
-        val size = if (compact) readoutTextPx(h) else h * 0.04f * fontScale
+        drawnReadout = line
+        val size = readoutDrawPx(h, compact)
         timeFill.textSize = size
         timeGlow.textSize = size
         timeGlow.strokeWidth = size * (if (compact) 0.10f else 0.12f)
