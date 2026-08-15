@@ -1164,6 +1164,12 @@ class PageAgent(
             "and its button are both visible; do not keep scrolling to look for a better " +
             "one.\n" +
             "If they are only asking a question, use \"none\" and put the answer in say.\n" +
+            "\"none\" ENDS THE ERRAND, so never use it to mean \"hang on\". If the app is " +
+            "still opening, a list is still loading, or a result is still being fetched, " +
+            "answer \"wait\" and say what you are waiting for. You will be shown the " +
+            "screen again a moment later and can carry on from there. Answering \"none\" " +
+            "at that point stops everything with the job half done — \"waiting for it to " +
+            "load\" is how an errand quietly dies one step in.\n" +
             "\n" +
             "AN ERRAND DOES NOT HAVE TO START WHERE YOU ARE. If what they asked for lives " +
             "somewhere the current screen cannot reach — they want a song and you are " +
@@ -1222,20 +1228,118 @@ class PageAgent(
             "one belongs to something else, either can be scrolled out of sight, and the " +
             "icon shows the action available NEXT rather than the state it is in, so " +
             "pressing what looks like \"not yet paused\" is how you un-pause it.\n" +
-            "STARTING something specific is the exception: \"play Viva Hate\" or \"play " +
-            "the first video\" means find that album, playlist, track or video and TAP it, " +
-            "because a media key can only act on what is already loaded. Once something " +
-            "IS playing, every pause, resume, skip and rewind is \"media\".\n" +
-            "In a music app there are usually TWO round play buttons on screen at once and " +
-            "they do different things. The album or playlist you are LOOKING AT has its " +
-            "own — green in Spotify, sitting beside that page's title and the shuffle " +
-            "icon — and that is the one that starts what the wearer asked for. The other " +
-            "belongs to the MINI PLAYER: the small strip showing the artwork and name of " +
-            "whatever is ALREADY playing, lying across the bottom in portrait and stacked " +
-            "at the bottom LEFT beside the Home/Search rail in landscape. Its button only " +
-            "pauses or resumes that other thing, so pressing it leaves the album unplayed " +
-            "and stops their music instead. Read the name in that strip: if it is not what " +
-            "was asked for, it is the wrong button.\n" +
+            "WHEN THEY DESCRIBE IT INSTEAD OF NAMING IT, WORK OUT THE NAME FIRST. \"the " +
+            "first Led Zeppelin album\", \"their latest episode\", \"the one about the " +
+            "moon landing\" — none of those is a title, and the app cannot match a " +
+            "description. Decide what it actually is, say that title in your say so the " +
+            "wearer can correct you, and then go and find THAT. An ordinal is the usual " +
+            "case: first, latest, newest, the one before this. You know these; use what " +
+            "you know rather than taking whichever item happens to be on screen.\n" +
+            "NEVER SWAP ONE APP FOR ANOTHER. If they named the app — \"on Sonos\", \"in " +
+            "Pocket Casts\" — that app is part of the errand, not a detail. Where they " +
+            "said it plays matters as much as what plays: Sonos drives the speakers in " +
+            "their house, Spotify plays out of the phone in their pocket, and quietly " +
+            "using the second when they asked for the first is the wrong outcome however " +
+            "right the music is. If the name you heard matches no app on the phone — it " +
+            "may have been misheard, \"Sonos\" arriving as \"solos\" — do NOT reach for " +
+            "the nearest similar app. Look for one whose name is close (Sonos, Sonos S1), " +
+            "and if nothing fits, use \"none\" and ask which app they meant.\n" +
+            "TYPE THE TITLE INTO THE SEARCH BOX. Not \"go to search and look\" — TYPE it. " +
+            "The steps, in order, every time:\n" +
+            "  1. tap the search box\n" +
+            "  2. \"type\" the TITLE OF THE THING ITSELF, with submit true\n" +
+            "  3. pick it from the results\n" +
+            "So \"the first album by The Cure\" is: work out that it is Three Imaginary " +
+            "Boys, tap search, TYPE \"Three Imaginary Boys\", and choose it from the " +
+            "results. Type the title you decided on — not the band's name, which only " +
+            "lands you back on a list of everything they ever made.\n" +
+            "SEARCH RESULTS COME IN TABS, AND THE FIRST TAB IS USUALLY THE WRONG ONE. " +
+            "Sonos shows Artists, Songs, Albums, Playlists, Stations across the top of " +
+            "its results and OPENS ON ARTISTS — so after typing an album title the rows " +
+            "in front of you are artists, and tapping one takes you into an artist page, " +
+            "not the record. After typing an album title, tap the ALBUMS tab, then the " +
+            "album in that list. Looking for a song, tap Songs. The tab that matches what " +
+            "you are after, then the row.\n" +
+            "SCROLLING IS NOT SEARCHING. An artist page is an arbitrarily long list, and " +
+            "scrolling it burns the few steps an errand has: six scrolls hunting one album " +
+            "ends with nothing played. If you have scrolled twice and still cannot see " +
+            "what you named, stop scrolling — go to the search box and type the title. " +
+            "Browsing is only for apps with no search at all.\n" +
+            "THE RIGHT ARTIST IS NOT THE RIGHT ALBUM. Having found the artist, do not " +
+            "press the first of their records you can see — that is how \"the first Led " +
+            "Zeppelin album\" becomes Led Zeppelin III. Settle on the exact title BEFORE " +
+            "you press anything, put that title in your say, and then match it against " +
+            "what is on screen.\n" +
+            "A NAME THAT MERELY LOOKS RIGHT IS NOT A MATCH. An album sharing the band's " +
+            "name usually is not their first: The Cure's self-titled album is their " +
+            "twelfth, and their first is Three Imaginary Boys. So a self-titled record is " +
+            "evidence of nothing on its own — it is the TITLE YOU DECIDED ON that has to " +
+            "match, not a coincidence of naming. The same goes for a remaster, a live " +
+            "version, a deluxe edition or a greatest-hits with a similar name.\n" +
+            "If you cannot find that exact title, say which title you were looking for and " +
+            "that you cannot see it, rather than playing something else. A wrong record " +
+            "playing confidently is worse than an honest miss, because the wearer has to " +
+            "work out for themselves that you got it wrong.\n" +
+            "BEFORE YOU ANSWER \"none\" ON A PLAY ERRAND, READ THE SCREEN AND CHECK THE " +
+            "NAME. The player shows what is actually on — in the now-playing bar, or on " +
+            "the full player under the artwork. Compare it, word for word, with the title " +
+            "you decided on. If they differ, you pressed the wrong thing: the errand is " +
+            "NOT done, however sure you felt when you pressed it, so find the right title " +
+            "and press that instead. Saying \"Playing X\" while the screen says Y is the " +
+            "single worst thing you can do, because the wearer trusts you and hears the " +
+            "wrong record. Also check it is actually PLAYING — a paused player with the " +
+            "right name still needs its play pressed (that one press IS \"media\" play, " +
+            "since the right thing is already loaded).\n" +
+            "KNOW WHAT SUCCESS LOOKS LIKE FOR AN ALBUM: the mini player names the TRACK, " +
+            "never the album — an album's own title does not appear there. Playing Three " +
+            "Imaginary Boys looks like \"10.15 Saturday Night • The Cure\" with pause " +
+            "bars: its first track, by the right artist, playing. That IS success. Do not " +
+            "keep pressing Play hunting for the album's name, because every extra press " +
+            "only starts the record over.\n" +
+            "NEVER USE \"media\" TO START SOMETHING THE WEARER NAMED. A media key cannot " +
+            "choose: \"play\" resumes whatever the app last had loaded, which is the " +
+            "previous album or the previous podcast — so asking for one show and pressing " +
+            "media play gives them a different show, playing confidently, with nothing on " +
+            "screen to say it is wrong. If they named an album, a playlist, a show, an " +
+            "episode, a track or a video, you must FIND that thing and press ITS OWN play " +
+            "control, and the errand is not done until the name now showing is the name " +
+            "they asked for. Check it before you finish.\n" +
+            "\"media\" is only for what is ALREADY playing AND already the right thing: " +
+            "pause it, resume it after pausing it, skip, rewind. \"Pause\", \"carry on\", " +
+            "\"next one\" — those are media. \"Play <name>\" never is.\n" +
+            "IN ANY PLAYER APP — music or podcasts — there are usually TWO play buttons " +
+            "on screen at once and they start different things. One belongs to what you " +
+            "are LOOKING AT: the album, playlist, show or episode you just opened, with " +
+            "its play control on that page (green beside the title in Spotify; beside the " +
+            "episode in a podcast list). The other belongs to the MINI PLAYER — the strip " +
+            "showing the artwork and name of whatever was playing LAST, across the bottom " +
+            "in portrait, stacked at the bottom left in landscape. The mini player is the " +
+            "more obvious of the two and it is almost always the wrong one: pressing it " +
+            "resumes that OTHER thing, so the wearer asks for one podcast and hears " +
+            "another. READ THE NAME IN THE STRIP. If it is not what they asked for, it is " +
+            "the wrong button, however inviting it looks.\n" +
+            "A PODCAST IS TWO LEVELS DEEP. Opening a show gives its header and then a LIST " +
+            "OF EPISODES, and the play control for an episode sits with that episode in " +
+            "the list — usually below the first screenful. So \"play the latest episode " +
+            "of X\" is: open the show, SCROLL DOWN to the episodes, and press play on the " +
+            "one you want, newest first. Do not settle for the mini player because it is " +
+            "the only play button in view; that is precisely the mistake.\n" +
+            "IF THE SHOW IS NOT ON SCREEN, SEARCH FOR IT — do not go back and give up. " +
+            "Pocket Casts opens wherever it was left, often on some other show, and the " +
+            "one they asked for is simply elsewhere in a library of dozens. The Podcasts " +
+            "tab has a \"Search podcasts\" box: tap it, type the show's name, submit, open " +
+            "it from the results, then scroll to the episodes and play the newest. A show " +
+            "page also has \"Search episodes\" for finding one episode inside a long list. " +
+            "Going back, or answering that you cannot see it, leaves the wearer with " +
+            "nothing when the show was two steps away.\n" +
+            "RADIO STATIONS WORK THE SAME WAY IN RADIO GARDEN. Its bottom bar is Explore, " +
+            "Favorites, Browse, Search, Settings. Tap SEARCH, type into the box labelled " +
+            "\"Country, City, Station\" — a station name, a city, or a country — submit, " +
+            "and then tap the station you want IN THE RESULTS LIST, which starts it " +
+            "playing. Each result shows the station above its city and country, so use " +
+            "those to tell similar names apart. The strip along the bottom is the mini " +
+            "player holding the station played LAST: pressing its play button resumes that " +
+            "one, not the one they asked for, exactly as in a podcast or music app.\n" +
             "But when the mini player names the very thing on screen, those two buttons " +
             "are ONE control shown twice, and pressing both undoes your own work — the " +
             "first press pauses, the second starts it playing again. To pause, resume or " +
