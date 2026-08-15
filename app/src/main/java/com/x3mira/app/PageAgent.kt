@@ -273,19 +273,28 @@ class PageAgent(
                 // An outcome reads "X is playing"; an intention reads "Opening
                 // / Tapping / Searching ...". Catch the intention and bounce it
                 // back as one more look instead of finishing the errand there.
-                val intention = say.trim().let {
-                    it.startsWith("opening", true) || it.startsWith("tapping", true) ||
-                    it.startsWith("searching", true) || it.startsWith("typing", true) ||
-                    it.startsWith("scrolling", true) || it.startsWith("selecting", true) ||
-                    it.startsWith("playing the", true) && !done.any { d -> d.startsWith("tapped") }
+                //
+                // BUT A VERB IS NOT A TENSE. "Opening your subscriptions" is a
+                // lie when nothing was opened and a fair description of the
+                // screen when the errand opened it two hops ago — same words,
+                // opposite truth — and judging on the words alone bounced the
+                // correct answer off an errand that had already landed, on the
+                // shared refusal budget, until it died. So the ledger decides:
+                // an action-shaped sentence is only an intention when NOTHING
+                // in `done` performed it. That check already guarded "playing
+                // the"; it belongs on every verb.
+                val intention = say.trim().lowercase().let { line ->
+                    val claim = INTENTIONS.entries.firstOrNull { line.startsWith(it.key) }
+                    claim != null && done.none { d -> d.startsWith(claim.value) }
                 }
                 if (intention && refusals < MAX_REFUSALS) {
                     refusals++
                     Log.w(TAG, "hop none with an intention ('${say.take(48)}') — not an ending; re-asking")
                     lastActionNote = "You answered \"none\" — which ENDS the errand — while " +
-                        "saying you were about to do something (\"${say.take(60)}\"). If " +
-                        "there is a step left, DO it: choose the action that does it. Only " +
-                        "answer none when the thing has actually happened."
+                        "saying you were about to do something (\"${say.take(60)}\") that " +
+                        "this errand has not actually done yet. If there is a step left, DO " +
+                        "it: choose the action that does it. Only answer none when the thing " +
+                        "has actually happened."
                     if (mine != generation) return
                     shot = grabFrame() ?: shot
                     continue
@@ -1242,6 +1251,25 @@ class PageAgent(
         private const val MAX_REFUSALS = 8
         /** Repeats at ONE spot before the errand accepts that press as its answer. */
         private const val SPOT_REFUSALS = 2
+        /**
+         * Action-shaped openings, and the `done` entry that would make each
+         * one TRUE rather than a promise. Keys are matched against a
+         * lowercased say; values are the prefixes written by the branches that
+         * actually perform these things (see every done.add in this file).
+         */
+        private val INTENTIONS = linkedMapOf(
+            "opening" to "opened",
+            "tapping" to "tapped",
+            "selecting" to "tapped",
+            "playing the" to "tapped",
+            "searching" to "typed",
+            "typing" to "typed",
+            // No branch ever writes "scrolled", so scrolling is always read as
+            // a promise — deliberately, because arriving somewhere by scrolling
+            // is not finishing an errand, and the conservative reading here
+            // matches what this guard did before it consulted the ledger.
+            "scrolling" to "scrolled",
+        )
         /** Model/user turns carried per errand — recent past only. */
         private const val MAX_TURNS = 8
         /** HTTP requests one errand may make, whatever the hops and refusals do. */
