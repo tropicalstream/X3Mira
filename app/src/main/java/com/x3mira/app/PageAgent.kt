@@ -232,6 +232,9 @@ class PageAgent(
             return
         }
         val mine = generation
+        done.clear()                       // and remembers nothing from last time
+        refusals = 0                       // and gets its full budget back
+        scrollRun = 0; lastScrollDir = 0   // a fresh errand scrolls from scratch
         tapped.clear()                     // a fresh errand may press anywhere
         opened.clear()                     // ...and revisit a site it visited last time
         typed.clear()
@@ -255,7 +258,32 @@ class PageAgent(
             val say = obj.optString("say").trim().ifEmpty { "Done." }
             val action = obj.optString("action")
             Log.i(TAG, "hop $hop -> action='$action' say='${say.take(90)}'")
-            if (action == "none" || action.isEmpty()) { finish(say, ok = true); return }
+            if (action == "none" || action.isEmpty()) {
+                // "none" WITH AN ACTION-SHAPED SENTENCE IS NOT AN ENDING.
+                // The last Sonos run died at 'none' + "Opening the search in
+                // Sonos." — a step it was ABOUT to take, spoken as if done.
+                // An outcome reads "X is playing"; an intention reads "Opening
+                // / Tapping / Searching ...". Catch the intention and bounce it
+                // back as one more look instead of finishing the errand there.
+                val intention = say.trim().let {
+                    it.startsWith("opening", true) || it.startsWith("tapping", true) ||
+                    it.startsWith("searching", true) || it.startsWith("typing", true) ||
+                    it.startsWith("scrolling", true) || it.startsWith("selecting", true) ||
+                    it.startsWith("playing the", true) && !done.any { d -> d.startsWith("tapped") }
+                }
+                if (intention && refusals < MAX_REFUSALS) {
+                    refusals++
+                    Log.w(TAG, "hop none with an intention ('${say.take(48)}') — not an ending; re-asking")
+                    lastActionNote = "You answered \"none\" — which ENDS the errand — while " +
+                        "saying you were about to do something (\"${say.take(60)}\"). If " +
+                        "there is a step left, DO it: choose the action that does it. Only " +
+                        "answer none when the thing has actually happened."
+                    if (mine != generation) return
+                    shot = grabFrame() ?: shot
+                    continue
+                }
+                finish(say, ok = true); return
+            }
             // Fingerprint BEFORE acting: "has it changed" needs the thing it
             // changed from, and after the action it is already too late to ask.
             val beforeSig = probe()
@@ -265,6 +293,24 @@ class PageAgent(
                 Act.CANNOT -> { finish(say, ok = false); return }
                 Act.DONE -> return          // the branch already spoke for itself
                 Act.ACTED -> Unit
+                Act.REFUSED -> {
+                    // A REFUSAL COSTS NOTHING. Nothing was done, the screen is
+                    // unchanged, and charging a hop for it is how an errand
+                    // starves: five refused open_apps ate half the budget while
+                    // Sonos sat there already open, and the search never
+                    // happened. Re-ask immediately, with the steering note, but
+                    // bound the dithering separately so a model that will only
+                    // ever repeat itself still ends rather than spinning.
+                    refusals++
+                    Log.i(TAG, "refusal $refusals/$MAX_REFUSALS — hop not spent")
+                    if (refusals >= MAX_REFUSALS) {
+                        finish("I keep going round in circles on that one.", ok = false)
+                        return
+                    }
+                    if (mine != generation) return
+                    shot = grabFrame() ?: shot
+                    continue
+                }
             }
             hop++
             if (hop >= MAX_HOPS) break
@@ -374,6 +420,24 @@ class PageAgent(
      */
     private val tapped = ArrayList<FloatArray>()
 
+    /**
+     * How many times in a row the same direction has been scrolled, and
+     * which way. A run of these means the thing is not in this list at all
+     * — see the scroll branch, where the run steers to search instead.
+     */
+    /**
+     * A short account of what this errand has actually done, in order,
+     * fed back into every prompt. Without it each hop re-reads the
+     * errand from the top and repeats its first step forever.
+     */
+    private val done = ArrayList<String>()
+
+    /** Guard refusals this errand — bounded so dithering still ends. */
+    private var refusals = 0
+
+    private var scrollRun = 0
+    private var lastScrollDir = 0
+
     /** Sites already opened this errand, compared by [siteOf]. */
     private val opened = HashSet<String>()
 
@@ -410,7 +474,7 @@ class PageAgent(
      *         used where the right answer is a question back to the wearer
      *         rather than an action, so the loop must not speak over it.
      */
-    private enum class Act { ACTED, SETTLED, CANNOT, DONE }
+    private enum class Act { ACTED, SETTLED, CANNOT, DONE, REFUSED }
 
     private fun perform(action: String, obj: JSONObject, say: String): Act = when (action) {
         "tap" -> {
@@ -444,9 +508,20 @@ class PageAgent(
                                 kotlin.math.abs(fy - it[1]) < SAME_SPOT
                         }
                         if (prior != null && prior[2] > 0.5f) {
-                            Log.i(TAG, "hop tap repeated at ($fx,$fy) — first press MOVED " +
-                                "the screen, so the errand already landed")
-                            Act.SETTLED
+                            // The press WORKED — but that is all it proves. As
+                            // a "the errand landed" shortcut this fired two
+                            // hops into a Sonos errand, declaring victory at
+                            // the search page. Working press = look at what it
+                            // produced and take the NEXT step; the errand only
+                            // ends when the model, seeing the live screen,
+                            // says so — which the finish check now demands.
+                            Log.i(TAG, "hop tap repeated at ($fx,$fy) — press already " +
+                                "worked; steering to the next step")
+                            lastActionNote = "You already pressed that exact spot and it " +
+                                "WORKED — the screen you are looking at is the result. Do " +
+                                "not press it again. Take the NEXT step toward the goal, " +
+                                "or answer none only if the goal is truly visible as done."
+                            Act.REFUSED
                         } else {
                             Log.w(TAG, "hop tap REPEATED at ($fx,$fy) — first press changed " +
                                 "nothing; steering")
@@ -466,11 +541,28 @@ class PageAgent(
                         // Third slot: did the screen answer this press? Unknown
                         // until the settle watch below fills it in.
                         tapped.add(floatArrayOf(fx, fy, -1f))
+                        done.add("tapped ${say.take(48)}")
                         main.post { onText(say); onTap(fx, fy) }
                         Act.ACTED
                     }
                 }
             }
+        }
+        "wait" -> {
+            // "Still loading" is not "finished", and the model had no way to
+            // say so: it kept answering none — which ends the errand — while
+            // an app was still coming up, so "play X on Sonos" died at
+            // "Waiting for Sonos to load". This does nothing on purpose. The
+            // loop's own settle-and-look-again is the whole point, and
+            // MAX_HOPS still bounds how long it can dither.
+            Log.i(TAG, "hop wait: ${say.take(60)}")
+            main.post { onText(say) }
+            // Waiting changes nothing, so it must not spend a hop — three
+            // waits in a cold-start errand starved the budget with the goal
+            // in sight. Give the screen a moment, then re-ask on the free
+            // path; MAX_REFUSALS still bounds an errand that only ever waits.
+            Thread.sleep(1400)
+            Act.REFUSED
         }
         "navigate" -> {
             val dest = obj.optString("destination").trim()
@@ -556,8 +648,30 @@ class PageAgent(
                 Act.SETTLED
             }
         }
-        "scroll_down" -> { Log.i(TAG, "hop scroll down: $say"); main.post { onText(say); onScroll(1) }; Act.ACTED }
-        "scroll_up" -> { Log.i(TAG, "hop scroll up: $say"); main.post { onText(say); onScroll(-1) }; Act.ACTED }
+        "scroll_down", "scroll_up" -> {
+            val dir = if (action == "scroll_down") 1 else -1
+            // A SCROLL SPIRAL IS EVIDENCE THE LIST IS THE WRONG ROUTE. Hunting
+            // one album down an artist page cost six hops and played nothing,
+            // twice. Two fruitless scrolls in the same direction is enough to
+            // conclude the thing is not simply "further down"; a third is just
+            // the hop budget draining. Say so, once, and point at the search
+            // box — the model cannot see how many times it has already tried.
+            if (dir == lastScrollDir) scrollRun++ else { scrollRun = 1; lastScrollDir = dir }
+            if (scrollRun >= SCROLL_LIMIT) {
+                Log.w(TAG, "hop scroll x$scrollRun in one direction — steering to search")
+                lastActionNote = "You have now scrolled $scrollRun times without finding " +
+                    "it, so it is not simply further down this list. STOP SCROLLING. Tap " +
+                    "the app's search box, type the exact title you are looking for with " +
+                    "submit true, and pick it from the results."
+                scrollRun = 0
+                main.post { onText("Not in this list — searching instead") }
+                Act.ACTED
+            } else {
+                Log.i(TAG, "hop scroll ${if (dir == 1) "down" else "up"} ($scrollRun): $say")
+                main.post { onText(say); onScroll(dir) }
+                Act.ACTED
+            }
+        }
         "type" -> {
             val text = obj.optString("text")
             if (text.isEmpty()) Act.CANNOT
@@ -579,6 +693,7 @@ class PageAgent(
                     if (ok) {
                         typed.add(text)
                         Log.i(TAG, "hop type accepted")
+                        done.add("typed \"${text.take(40)}\" into the box")
                         if (submit) {
                             // SUBMITTING IS A ONE-WAY DOOR, and the screen does
                             // not say so. The tool chip disappears once the
@@ -628,13 +743,14 @@ class PageAgent(
                 // and was told the errand was complete with nothing played.
                 // The repeat is still worth catching — relaunching helps
                 // nobody — but the answer is to push on from here, not to stop.
-                Log.i(TAG, "hop open_app repeated $app — already there; steering on")
+                Log.i(TAG, "hop open_app REFUSED (already there) — no hop spent")
                 lastActionNote = "You are already in $app — it is the screen in front of " +
                     "you, and opening it again does nothing. Carry on with the REST of " +
                     "what was asked from this screen: find the thing on it and tap that."
                 Act.ACTED
             } else {
                 Log.i(TAG, "hop open_app $app")
+                done.add("opened $app")
                 tapped.clear()          // new app, new screen, new targets
                 main.post { onText(say); onOpenApp(app) }
                 Act.ACTED
@@ -710,10 +826,20 @@ class PageAgent(
             }.getOrNull()
         }
         val parts = org.json.JSONArray()
+        // WHAT HAS ALREADY BEEN DONE, not merely how many times. A count told
+        // the model nothing it could act on: every hop re-read the errand
+        // ("In the Sonos app, play ...") and executed its first clause again,
+        // so half of a ten-hop budget went on opening an app that was already
+        // open. Given the list, the opening step is visibly behind it.
+        val doneNote = if (done.isEmpty()) "" else
+            "\n\nSTEPS YOU HAVE ALREADY TAKEN, in order: " + done.joinToString("; ") +
+            ". Those are DONE — do not do them again, and in particular do not " +
+            "re-open an app you have already opened. Carry on from where that leaves you."
         val hopNote = if (hop == 0) "" else
             "\n\nYou have already taken $hop step(s) on this errand and this image is " +
             "the screen AS IT IS NOW. If the goal is reached, or you can now answer, use " +
-            "action \"none\" and give the answer in say. Otherwise take the next step."
+            "action \"none\" and give the answer in say. Otherwise take the next step." +
+            doneNote
         val typingNote = if (!typingEnabled) "" else
             "\n\nYou CAN type. ALWAYS tap the field FIRST — a type with nothing focused " +
             "goes nowhere and is wasted. To search or fill a box: \"tap\" it first so it has the " +
@@ -755,7 +881,7 @@ class PageAgent(
                             .put("enum", org.json.JSONArray()
                                 .put("none").put("tap").put("scroll_down")
                                 .put("scroll_up").put("open_url").put("open_app")
-                                .put("media").put("nav").put("window").put("navigate")
+                                .put("media").put("nav").put("window").put("navigate").put("wait")
                                 .apply { if (typingEnabled) put("type") })
                     )
                     .put("app", JSONObject().put("type", "STRING"))
@@ -946,6 +1072,12 @@ class PageAgent(
         private const val MAX_HOPS = 10
         /** Two taps closer than this (fraction of the screen) are the same press. */
         private const val SAME_SPOT = 0.04f
+
+        /** Fruitless scrolls in one direction before steering to search. */
+        private const val SCROLL_LIMIT = 3
+
+        /** Refusals before an errand is called circular and stopped. */
+        private const val MAX_REFUSALS = 8
         /**
          * Vision upload budget: tallest side and JPEG quality. 1152x540-ish at
          * 60 keeps a phone's UI labels legible to the model at about a third
