@@ -157,6 +157,19 @@ class P2pClient(
                         Log.i(TAG, "sighting ignored — mirror already delivering")
                         return
                     }
+                    // A SERVICE ANSWER CAN ARRIVE BEFORE ITS PEER RECORD DOES.
+                    // Right after a radio reset the framework hands back a stub
+                    // — blank name, blank or all-zero address — and connect()
+                    // on that fails instantly with ERROR. Left unguarded those
+                    // instant failures spent every credential attempt within
+                    // seconds, so the real join was never tried and the
+                    // fallback looked like a hardware verdict. The peer scan
+                    // repopulates within a sweep; wait for a real address.
+                    val addr = device.deviceAddress
+                    if (addr.isNullOrBlank() || addr == ZERO_MAC) {
+                        Log.i(TAG, "sighting ignored — peer record not populated yet")
+                        return
+                    }
                     connecting = true
                     Log.i(TAG, "found $instance on ${device.deviceName} — joining")
                     // JOIN BY PASSPHRASE, NOT BY BUTTON-PRESS. The phone
@@ -177,14 +190,16 @@ class P2pClient(
                         android.net.wifi.p2p.WifiP2pConfig.Builder()
                             .setNetworkName(NET_NAME)
                             .setPassphrase(PASSPHRASE)
-                            .setDeviceAddress(
-                                android.net.MacAddress.fromString(device.deviceAddress))
+                            .setDeviceAddress(android.net.MacAddress.fromString(addr))
                             .build()
                     }.getOrElse { pbcConfig(device) } else pbcConfig(device)
-                    // Our own sweep may still be scanning, and connect() during
-                    // an active discovery is the classic source of BUSY. Stop
-                    // it first; the sweep timer re-arms discovery afterwards.
-                    runCatching { m.stopPeerDiscovery(c, null) }
+                    // CONNECT WITH DISCOVERY STILL RUNNING. Stopping it
+                    // first looks tidier and is what the BUSY folklore
+                    // recommends, but on this framework stopPeerDiscovery
+                    // empties the peer table — and connect() to an address the
+                    // table no longer holds is rejected instantly with a bare
+                    // ERROR. Measured here: joins that worked before the stop
+                    // was added failed on every attempt after it.
                     runCatching {
                         m.connect(c, cfg, object : WifiP2pManager.ActionListener {
                             override fun onSuccess() { askInfo(0) }
@@ -195,7 +210,9 @@ class P2pClient(
                                 connecting = false
                             }
                         })
-                    }.onFailure { Log.w(TAG, "connect threw: ${it.message}"); connecting = false }
+                    }.onFailure {
+                        Log.w(TAG, "connect threw: ${it.message}"); connecting = false
+                    }
                     // The framework is allowed to simply never call back — and
                     // a join attempt that dies silently must not wedge the
                     // client forever. Guarded by the attempt id: this timer
@@ -358,5 +375,7 @@ class P2pClient(
         private const val ASK_TRIES = 10
         /** Credential-join failures tolerated before negotiating instead. */
         private const val CRED_STRIKES = 2
+        /** What the framework hands back for a peer it has not resolved. */
+        private const val ZERO_MAC = "00:00:00:00:00:00"
     }
 }
