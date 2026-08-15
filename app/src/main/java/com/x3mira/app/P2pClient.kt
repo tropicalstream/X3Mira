@@ -30,6 +30,15 @@ import android.util.Log
  */
 class P2pClient(
     private val context: Context,
+    /**
+     * True while the mirror is actually delivering frames. Every part of this
+     * client RESTS while that holds: joining a group the wearer doesn't need
+     * can put the single radio in time-slice between the router's channel and
+     * the group's — this codebase measured a working mirror collapse from
+     * 40 fps to 2 that way — and even the discovery sweeps steal air time.
+     * P2P exists for when there is no link, so it runs when there is none.
+     */
+    private val linkUp: () -> Boolean = { false },
     private val onHost: (String) -> Unit
 ) {
     private var manager: WifiP2pManager? = null
@@ -40,6 +49,29 @@ class P2pClient(
 
     @Volatile private var running = false
     @Volatile private var connecting = false
+    /**
+     * Consecutive credential-join attempts that produced no group. After
+     * [CRED_STRIKES] the joins fall back to negotiation, where the phone's
+     * approval bubble at least works. A COUNTER, not a flag, and reset by a
+     * formed group: one transient BUSY must not exile credentials for the
+     * life of the process. Counted from the watchdog as well as from
+     * onFailure, because the realistic way a bad-credential join dies is
+     * SILENTLY — the request is accepted and no group ever forms — and a
+     * fallback that only fires on explicit rejection is unreachable in
+     * exactly the case it exists for.
+     */
+    @Volatile private var credFailures = 0
+    /** Monotonic id of the newest join attempt, so a stale watchdog from an
+     *  earlier attempt cannot clear a newer one's state — the 20s timer
+     *  outlives the 12s sweep, so overlap is the normal case, not the race. */
+    private var joinSeq = 0
+    /** Which method the newest attempt used, so EVERY way an attempt can die
+     *  — explicit rejection, the watchdog, or askInfo running out of polls —
+     *  charges the strike to the right method. The poll-exhaustion exit is
+     *  the one that actually fires on this hardware, and it beats the
+     *  watchdog to clearing `connecting`, so a strike counted only by the
+     *  watchdog is a strike never counted. */
+    @Volatile private var attemptUsedCredentials = false
     /** Owner address of the group we are in, once there is one. */
     @Volatile var host: String? = null
         private set
@@ -121,32 +153,64 @@ class P2pClient(
                         Log.i(TAG, "sighting ignored (connecting=$connecting host=$host)")
                         return
                     }
+                    if (linkUp()) {
+                        Log.i(TAG, "sighting ignored — mirror already delivering")
+                        return
+                    }
                     connecting = true
                     Log.i(TAG, "found $instance on ${device.deviceName} — joining")
-                    val cfg = WifiP2pConfig().apply {
-                        deviceAddress = device.deviceAddress
-                        // The phone made itself owner outright, so never
-                        // contest the role: a negotiation this side won would
-                        // put the group owner on the device with no
-                        // ServerSocket.
-                        groupOwnerIntent = 0
-                    }
+                    // JOIN BY PASSPHRASE, NOT BY BUTTON-PRESS. The phone
+                    // creates its group with fixed credentials for exactly
+                    // this: a client that presents them is admitted like an
+                    // ordinary Wi-Fi client, and the wearer's phone never
+                    // shows the "device wants to connect" bubble. The old
+                    // negotiation join asked a human to approve every fresh
+                    // group — which is every capture restart — and that tap
+                    // is the one step that made outdoor reconnects manual.
+                    // If a credential join ever fails on this OS pairing, the
+                    // strike is remembered and the next sighting falls back
+                    // to negotiation, where the bubble at least works.
+                    val useCredentials = credFailures < CRED_STRIKES
+                    attemptUsedCredentials = useCredentials
+                    val attempt = ++joinSeq
+                    val cfg = if (useCredentials) runCatching {
+                        android.net.wifi.p2p.WifiP2pConfig.Builder()
+                            .setNetworkName(NET_NAME)
+                            .setPassphrase(PASSPHRASE)
+                            .setDeviceAddress(
+                                android.net.MacAddress.fromString(device.deviceAddress))
+                            .build()
+                    }.getOrElse { pbcConfig(device) } else pbcConfig(device)
+                    // Our own sweep may still be scanning, and connect() during
+                    // an active discovery is the classic source of BUSY. Stop
+                    // it first; the sweep timer re-arms discovery afterwards.
+                    runCatching { m.stopPeerDiscovery(c, null) }
                     runCatching {
                         m.connect(c, cfg, object : WifiP2pManager.ActionListener {
                             override fun onSuccess() { askInfo(0) }
                             override fun onFailure(reason: Int) {
-                                Log.w(TAG, "connect failed: $reason")
+                                if (useCredentials) credFailures++
+                                Log.w(TAG, "connect failed: $reason" +
+                                    " (credential strikes $credFailures/$CRED_STRIKES)")
                                 connecting = false
                             }
                         })
                     }.onFailure { Log.w(TAG, "connect threw: ${it.message}"); connecting = false }
                     // The framework is allowed to simply never call back — and
                     // a join attempt that dies silently must not wedge the
-                    // client forever. Whatever happened, after this long the
-                    // attempt is over and the next sighting may try again.
+                    // client forever. Guarded by the attempt id: this timer
+                    // outlives the sweep period, so without the guard a stale
+                    // watchdog from attempt A fires into attempt B — clearing
+                    // a negotiation join mid-human-tap, or charging B's slow
+                    // start against A's method. A silent death counts as a
+                    // credential strike, because silence is HOW wrong
+                    // credentials fail — the request is accepted and nothing
+                    // ever forms.
                     ui.postDelayed({
-                        if (host == null && connecting) {
-                            Log.w(TAG, "join attempt timed out — resetting")
+                        if (host == null && connecting && attempt == joinSeq) {
+                            if (useCredentials) credFailures++
+                            Log.w(TAG, "join attempt timed out — resetting" +
+                                " (credential strikes $credFailures/$CRED_STRIKES)")
                             connecting = false
                         }
                     }, JOIN_TIMEOUT_MS)
@@ -189,6 +253,12 @@ class P2pClient(
         // success is unfalsifiable from a log.
         Log.i(TAG, "sweep (running=$running connecting=$connecting host=$host)")
         if (!running || host != null) return
+        if (linkUp()) {
+            // Resting, not stopped: the timer keeps beating so the hunt
+            // resumes by itself the moment the mirror goes quiet.
+            ui.postDelayed({ sweep() }, SWEEP_MS)
+            return
+        }
         runCatching {
             // PEERS FIRST. On this Android 12 build a service sweep on its own
             // sees nothing — five minutes of clean sweeps against a phone that
@@ -225,7 +295,9 @@ class P2pClient(
         // wedged the whole client the first time a connect() "succeeded"
         // without a group ever forming, and did it invisibly.
         if (attempt >= ASK_TRIES) {
-            Log.w(TAG, "group never formed after $attempt polls — giving up this attempt")
+            if (attemptUsedCredentials) credFailures++
+            Log.w(TAG, "group never formed after $attempt polls — giving up" +
+                " (credential strikes $credFailures/$CRED_STRIKES)")
             connecting = false
             return
         }
@@ -235,6 +307,12 @@ class P2pClient(
                 if (info != null && info.groupFormed && addr != null) {
                     host = addr
                     connecting = false
+                    // Forgive strikes ONLY when credentials produced this
+                    // group. A group formed by negotiation proves nothing
+                    // about the credential path — resetting on it would
+                    // re-run two doomed ~12s credential attempts at every
+                    // re-form on hardware whose HAL never completes them.
+                    if (attemptUsedCredentials) credFailures = 0
                     Log.i(TAG, "group formed — owner at $addr (isOwner=${info.isGroupOwner})")
                     onHost(addr)
                 } else {
@@ -258,14 +336,27 @@ class P2pClient(
         host = null
     }
 
+    /** The phone contested nothing: it made itself owner outright, so never
+     *  bid for the role — a negotiation this side won would put the group
+     *  owner on the device with no ServerSocket. */
+    private fun pbcConfig(device: WifiP2pDevice) = WifiP2pConfig().apply {
+        deviceAddress = device.deviceAddress
+        groupOwnerIntent = 0
+    }
+
     companion object {
         private const val TAG = "X3MiraP2p"
         private const val INSTANCE = "x3mira"
+        /** MUST match P2pHost on the phone — the credentials ARE the pairing. */
+        private const val NET_NAME = "DIRECT-x3mira"
+        private const val PASSPHRASE = "x3mira-link-2026"
         private const val SERVICE = "_x3mira._tcp"
         private const val SWEEP_MS = 12_000L
         /** One join attempt's whole budget, callbacks included. */
         private const val JOIN_TIMEOUT_MS = 20_000L
         /** connectionInfo polls per attempt before conceding. */
         private const val ASK_TRIES = 10
+        /** Credential-join failures tolerated before negotiating instead. */
+        private const val CRED_STRIKES = 2
     }
 }

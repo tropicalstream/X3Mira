@@ -35,6 +35,7 @@ import kotlin.concurrent.thread
  */
 class DexLink(
     private val hostProvider: () -> String,
+
     private val port: Int = 7391,
     private val onState: (String) -> Unit,
     private val onGeometry: (w: Int, h: Int, inputReady: Boolean) -> Unit,
@@ -46,6 +47,10 @@ class DexLink(
     ) -> Unit = { _, _, _, _, _, _ -> }
 ) {
     @Volatile private var running = false
+    /** Wall clock of the newest RENDERED frame — "is the mirror alive right
+     *  now", for gates that must not act while the wearer is watching. */
+    @Volatile var lastRenderMs = 0L
+        private set
     @Volatile private var sock: Socket? = null
     @Volatile private var out: DataOutputStream? = null
     /** Single worker for the return channel; see [send]. */
@@ -222,6 +227,7 @@ class DexLink(
             }
 
             if (rendered) {
+                lastRenderMs = SystemClock.elapsedRealtime()
                 frames++
                 latSum += (arrival - sentNanos) / 1e6f
                 val now = SystemClock.elapsedRealtime()

@@ -326,10 +326,13 @@ class MainActivity : Activity() {
     private fun connect(surface: Surface) {
         link?.stop()
         if (discovery == null) discovery = Discovery(this).also { it.start() }
-        // Opt-in, and read fresh on every reconnect so toggling it in settings
-        // takes effect without a restart.
+        // On by default (off is the opt-out), and read fresh on every
+        // reconnect so toggling it in settings takes effect without a restart.
         if (!Prefs.p2p(this)) { p2p?.stop(); p2p = null }
-        else if (p2p == null) p2p = P2pClient(this) { addr ->
+        else if (p2p == null) p2p = P2pClient(this, linkUp = {
+            val t = link?.lastRenderMs ?: 0L
+            t > 0L && android.os.SystemClock.elapsedRealtime() - t < 5_000L
+        }) { addr ->
             // NOTHING to do but note it. The link's own retry loop re-reads
             // hostProvider on every attempt, so the group address is picked up
             // within a retry period by itself. The previous version "helped"
