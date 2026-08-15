@@ -73,6 +73,13 @@ class PageAgent(
     /** Launch an installed app by name — "open Spotify" is not a URL. */
     private val onOpenApp: (String) -> Unit = { },
     /**
+     * The phone's own buttons, by code: 1 back, 2 home, 3 recents, and 4+ the
+     * media transport keys. Both travel the 'G' verb, and neither is a thing
+     * the agent could reliably find by looking — Home is a gesture bar on this
+     * phone, not a button at all.
+     */
+    private val onGlobal: (Int) -> Unit = { },
+    /**
      * A TINY copy of the mirror, for "has the screen changed yet?".
      *
      * Deliberately not [frameProvider]: that returns the decoder's full
@@ -250,6 +257,7 @@ class PageAgent(
             // Fingerprint BEFORE acting: "has it changed" needs the thing it
             // changed from, and after the action it is already too late to ask.
             val beforeSig = probe()
+            val tapsBefore = tapped.size
             when (perform(action, obj, say)) {
                 Act.SETTLED -> { finish(say, ok = true); return }
                 Act.CANNOT -> { finish(say, ok = false); return }
@@ -262,10 +270,14 @@ class PageAgent(
             // rather than by sleeping a guess: a page load or an app cold start
             // is a far bigger event than a tap, and one constant cannot be
             // right for both without being wrong for one.
-            awaitSettled(
+            val moved = awaitSettled(
                 beforeSig,
                 if (action == "open_url" || action == "open_app") LOAD_MS else TRANSITION_MS
             )
+            // Remember whether THAT press did anything, against the spot that
+            // made it. It is the only honest way to answer "was this already
+            // done?" if the model reaches for the same control a second time.
+            if (tapped.size > tapsBefore) tapped.last()[2] = if (moved) 1f else 0f
             if (mine != generation) return
             shot = grabFrame()
             if (shot == null) { finish("I lost sight of the screen.", ok = false); return }
@@ -325,8 +337,8 @@ class PageAgent(
      * change nothing visible, and the errand should carry on and let the model
      * judge from the frame.
      */
-    private fun awaitSettled(before: Long?, capMs: Long) {
-        if (before == null) { Thread.sleep(SETTLE_MS); return }
+    private fun awaitSettled(before: Long?, capMs: Long): Boolean {
+        if (before == null) { Thread.sleep(SETTLE_MS); return false }
         val start = SystemClock.uptimeMillis()
         var changed = false
         var lastSig = before
@@ -341,10 +353,11 @@ class PageAgent(
             if (sig != lastSig) { lastSig = sig; stillSince = SystemClock.uptimeMillis(); continue }
             if (SystemClock.uptimeMillis() - stillSince >= STILL_MS) {
                 Log.i(TAG, "settled after ${SystemClock.uptimeMillis() - start}ms")
-                return
+                return true
             }
         }
         Log.i(TAG, "settle cap hit after ${capMs}ms (changed=$changed)")
+        return changed
     }
 
     /**
@@ -408,16 +421,107 @@ class PageAgent(
                 when {
                     fx !in 0f..1f || fy !in 0f..1f -> Act.CANNOT
                     repeat -> {
-                        Log.i(TAG, "hop tap repeated at ($fx,$fy) — errand already done")
-                        Act.SETTLED
+                        // A repeat on its own says NOTHING about success. Read
+                        // as "done" it announces plays that never happened;
+                        // read as "stuck" it contradicts a press that worked
+                        // and sends the agent round again. Both were guesses.
+                        // The screen already answered the question the first
+                        // time — awaitSettled watched whether that press moved
+                        // anything — so decide on that instead.
+                        val prior = tapped.firstOrNull {
+                            kotlin.math.abs(fx - it[0]) < SAME_SPOT &&
+                                kotlin.math.abs(fy - it[1]) < SAME_SPOT
+                        }
+                        if (prior != null && prior[2] > 0.5f) {
+                            Log.i(TAG, "hop tap repeated at ($fx,$fy) — first press MOVED " +
+                                "the screen, so the errand already landed")
+                            Act.SETTLED
+                        } else {
+                            Log.w(TAG, "hop tap REPEATED at ($fx,$fy) — first press changed " +
+                                "nothing; steering")
+                            lastActionNote = "You already pressed that exact spot earlier " +
+                                "and the screen did not react at all, so it is the wrong " +
+                                "control and pressing it again cannot help. Choose a " +
+                                "DIFFERENT element. If you are on an album or playlist and " +
+                                "the only play button in view is the mini player's, that " +
+                                "one belongs to the previous track: \"scroll_down\" first " +
+                                "to bring this page's own play button into view."
+                            main.post { onText("That did nothing — trying another way") }
+                            Act.ACTED
+                        }
                     }
                     else -> {
                         Log.i(TAG, "hop tap box=[$ymin,$xmin,$ymax,$xmax] -> ($fx,$fy)")
-                        tapped.add(floatArrayOf(fx, fy))
+                        // Third slot: did the screen answer this press? Unknown
+                        // until the settle watch below fills it in.
+                        tapped.add(floatArrayOf(fx, fy, -1f))
                         main.post { onText(say); onTap(fx, fy) }
                         Act.ACTED
                     }
                 }
+            }
+        }
+        "window" -> {
+            // The little floating video window. Handled by name on the phone
+            // rather than aimed at: it is a few hundred pixels in a corner and
+            // its controls are not even drawn until it is touched, so a tap
+            // here is the least reliable thing the agent could attempt.
+            val code = when (obj.optString("window").trim().lowercase()) {
+                "fullscreen" -> 11
+                "close" -> 12
+                else -> 0
+            }
+            if (code == 0) Act.CANNOT
+            else {
+                Log.i(TAG, "hop window ${obj.optString("window")} -> code $code")
+                main.post { onText(say); onGlobal(code) }
+                Act.SETTLED
+            }
+        }
+        "nav" -> {
+            // Back, Home and Recents as the phone's real buttons. On this
+            // phone Home is a gesture bar, not a button, so there is often
+            // nothing on screen to tap even when the wearer asks plainly to
+            // "go home" — and hunting for one is how the agent ends up
+            // pressing something else entirely.
+            val code = when (obj.optString("nav").trim().lowercase()) {
+                "back" -> 1
+                "home" -> 2
+                "recents" -> 3
+                // Closing is not the same as leaving. "home" backgrounds an
+                // app and it keeps running; this throws its card away.
+                "close" -> 14
+                else -> 0
+            }
+            if (code == 0) Act.CANNOT
+            else {
+                Log.i(TAG, "hop nav ${obj.optString("nav")} -> code $code")
+                main.post { onText(say); onGlobal(code) }
+                Act.SETTLED
+            }
+        }
+        "media" -> {
+            // Transport goes as a key, never as a press on a picture of a
+            // button. Every playback failure so far came from hunting the
+            // right circle: two of them on screen, either one under the fold,
+            // and the icon showing the next action rather than the state.
+            val code = when (obj.optString("media").trim().lowercase()) {
+                "play" -> 5
+                "pause" -> 6
+                "next" -> 7
+                "previous" -> 8
+                "rewind" -> 9
+                "forward" -> 10
+                else -> 0
+            }
+            if (code == 0) Act.CANNOT
+            else {
+                Log.i(TAG, "hop media ${obj.optString("media")} -> code $code")
+                main.post { onText(say); onGlobal(code) }
+                // The picture barely changes for a media key, so there is
+                // nothing to look at afterwards and nothing to second-guess:
+                // the phone either has a session to take it or it does not.
+                Act.SETTLED
             }
         }
         "scroll_down" -> { Log.i(TAG, "hop scroll down: $say"); main.post { onText(say); onScroll(1) }; Act.ACTED }
@@ -443,6 +547,26 @@ class PageAgent(
                     if (ok) {
                         typed.add(text)
                         Log.i(TAG, "hop type accepted")
+                        if (submit) {
+                            // SUBMITTING IS A ONE-WAY DOOR, and the screen does
+                            // not say so. The tool chip disappears once the
+                            // request goes, and the answer takes seconds to
+                            // draw, so the very next look is a bare chat — from
+                            // which the model concluded, repeatedly, that it had
+                            // never picked the tool and opened the menu again.
+                            // That re-pick is destructive: the app offers to
+                            // start a NEW CHAT and throws the request away. The
+                            // static prompt could not reach it here; a note
+                            // timed to this exact moment can.
+                            lastActionNote = "You have JUST SUBMITTED that request, so the " +
+                                "menu step is finished — do not open the + or re-pick a " +
+                                "tool now, which would discard it and start a new chat. " +
+                                "The app is working and its answer takes a few seconds to " +
+                                "appear. Look at the screen as it is: if there is a button " +
+                                "that begins or opens the result — \"Start research\", " +
+                                "\"Generate\", \"Open\" — press that. If it is still " +
+                                "working, answer none and say so."
+                        }
                         Act.ACTED
                     } else {
                         // NOT settled, and not remembered: the model gets told
@@ -466,8 +590,17 @@ class PageAgent(
             val app = obj.optString("app").trim()
             if (app.isEmpty()) Act.CANNOT
             else if (!opened.add("app:" + app.lowercase())) {
-                Log.i(TAG, "hop open_app repeated $app — already there")
-                Act.SETTLED
+                // ARRIVING IS NOT FINISHING. Settling here ended errands at
+                // their halfway point: "open YouTube and play the first video"
+                // opened YouTube, asked for it again to do the playing part,
+                // and was told the errand was complete with nothing played.
+                // The repeat is still worth catching — relaunching helps
+                // nobody — but the answer is to push on from here, not to stop.
+                Log.i(TAG, "hop open_app repeated $app — already there; steering on")
+                lastActionNote = "You are already in $app — it is the screen in front of " +
+                    "you, and opening it again does nothing. Carry on with the REST of " +
+                    "what was asked from this screen: find the thing on it and tap that."
+                Act.ACTED
             } else {
                 Log.i(TAG, "hop open_app $app")
                 tapped.clear()          // new app, new screen, new targets
@@ -484,11 +617,16 @@ class PageAgent(
                 // browser is still coming up, the model cannot see that it
                 // already succeeded and simply answers "open it" a second
                 // time — which relaunches the page and puts it back where it
-                // started, forever. Opening a site you have already opened is
-                // never progress, so treat it as arrival and stop.
+                // started, forever. So the repeat is still refused. But
+                // arriving somewhere is not the same as finishing the errand
+                // that sent you there, and settling here ended half-done
+                // journeys as successes, so steer instead of stopping.
                 opened.contains(same) -> {
-                    Log.i(TAG, "hop open repeated $url — already there")
-                    Act.SETTLED
+                    Log.i(TAG, "hop open repeated $url — already there; steering on")
+                    lastActionNote = "That page is already open and in front of you — " +
+                        "loading it again would only start it over. Continue the errand " +
+                        "from this screen instead."
+                    Act.ACTED
                 }
                 else -> {
                     Log.i(TAG, "hop open $url")
@@ -585,9 +723,29 @@ class PageAgent(
                             .put("enum", org.json.JSONArray()
                                 .put("none").put("tap").put("scroll_down")
                                 .put("scroll_up").put("open_url").put("open_app")
+                                .put("media").put("nav").put("window")
                                 .apply { if (typingEnabled) put("type") })
                     )
                     .put("app", JSONObject().put("type", "STRING"))
+                    // Transport as a named verb rather than a coordinate. The
+                    // phone turns each of these into a real media key, so it
+                    // lands on whatever is actually playing.
+                    .put(
+                        "media", JSONObject().put("type", "STRING")
+                            .put("enum", org.json.JSONArray()
+                                .put("play").put("pause").put("next")
+                                .put("previous").put("rewind").put("forward"))
+                    )
+                    .put(
+                        "nav", JSONObject().put("type", "STRING")
+                            .put("enum", org.json.JSONArray()
+                                .put("back").put("home").put("recents").put("close"))
+                    )
+                    .put(
+                        "window", JSONObject().put("type", "STRING")
+                            .put("enum", org.json.JSONArray()
+                                .put("fullscreen").put("close"))
+                    )
                     // Going to a named site is not a gesture. Without this the
                     // model does the only thing its vocabulary allows — taps
                     // the address bar — and then stalls in front of a keyboard

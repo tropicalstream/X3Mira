@@ -278,6 +278,9 @@ class MainActivity : Activity() {
                 }
             },
             onOpenApp = { name -> link?.openApp(name) },
+            // Transport rides the existing 'G' verb: codes 4+ are media keys
+            // on the phone side, dispatched to whichever session holds audio.
+            onGlobal = { code -> link?.global(code) },
             // Tiny on purpose: this answers "has the picture changed?", not
             // "what does it say", and it is sampled several times a second.
             probeProvider = {
