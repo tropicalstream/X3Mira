@@ -239,6 +239,8 @@ class PageAgent(
         }
         val mine = generation
         done.clear()                       // and remembers nothing from last time
+        turns.clear()                      // ...including the conversation itself
+        calls = 0                          // and a fresh model-call budget
         refusals = 0                       // and gets its full budget back
         scrollRun = 0; lastScrollDir = 0   // a fresh errand scrolls from scratch
         tapped.clear()                     // a fresh errand may press anywhere
@@ -437,6 +439,18 @@ class PageAgent(
      * errand from the top and repeats its first step forever.
      */
     private val done = ArrayList<String>()
+    /**
+     * The errand's conversation so far, as Gemini turns. Text only — the
+     * newest frame rides the live user turn — and trimmed to the last few
+     * exchanges so a long errand cannot grow its own prompt without bound.
+     */
+    private val turns = ArrayList<JSONObject>()
+    /** HTTP requests this errand has made. */
+    private var calls = 0
+    /** When the newest request went out, for the inter-call floor. */
+    private var lastCallAt = 0L
+    /** Set within one askOnce when a 429 landed, to stop the model walk. */
+    private var quotaHit = false
 
     /** Guard refusals this errand — bounded so dithering still ends. */
     private var refusals = 0
@@ -515,19 +529,43 @@ class PageAgent(
                         }
                         if (prior != null && prior[2] > 0.5f) {
                             // The press WORKED — but that is all it proves. As
-                            // a "the errand landed" shortcut this fired two
-                            // hops into a Sonos errand, declaring victory at
-                            // the search page. Working press = look at what it
-                            // produced and take the NEXT step; the errand only
-                            // ends when the model, seeing the live screen,
-                            // says so — which the finish check now demands.
-                            Log.i(TAG, "hop tap repeated at ($fx,$fy) — press already " +
-                                "worked; steering to the next step")
-                            lastActionNote = "You already pressed that exact spot and it " +
-                                "WORKED — the screen you are looking at is the result. Do " +
-                                "not press it again. Take the NEXT step toward the goal, " +
-                                "or answer none only if the goal is truly visible as done."
-                            Act.REFUSED
+                            // an immediate "the errand landed" shortcut this
+                            // fired two hops into a Sonos errand, declaring
+                            // victory at the search page. So a working press
+                            // still means look at what it produced and take the
+                            // NEXT step — the FIRST time. What follows is the
+                            // other half of that lesson, learned since: never
+                            // ending on our own account is what let an errand
+                            // that had already arrived spin until it died.
+                            //
+                            // CONVERGENCE IS TERMINAL, NOT RETRYABLE. Steering
+                            // the model off a spot it keeps choosing works or it
+                            // does not; asking a third time has never once
+                            // produced a different answer, and each ask is
+                            // another ~96KB upload. Count refusals PER SPOT and
+                            // treat the third as the errand's answer: the press
+                            // worked, the screen in front of the wearer is the
+                            // result, so say so rather than dying with "I keep
+                            // going round in circles" on an errand that landed.
+                            prior[3] = prior[3] + 1f
+                            if (prior[3] >= SPOT_REFUSALS) {
+                                Log.i(TAG, "hop tap settled at ($fx,$fy) after " +
+                                    "${prior[3].toInt()} repeats — calling it done")
+                                // DONE means the branch speaks for itself, so say
+                                // the model's own line: it describes what the
+                                // press achieved, which is what the wearer is
+                                // now looking at.
+                                finish(say.ifBlank { "That's done." }, ok = true)
+                                Act.DONE
+                            } else {
+                                Log.i(TAG, "hop tap repeated at ($fx,$fy) — press already " +
+                                    "worked; steering to the next step")
+                                lastActionNote = "You already pressed that exact spot and it " +
+                                    "WORKED — the screen you are looking at is the result. Do " +
+                                    "not press it again. Take the NEXT step toward the goal, " +
+                                    "or answer none only if the goal is truly visible as done."
+                                Act.REFUSED
+                            }
                         } else {
                             Log.w(TAG, "hop tap REPEATED at ($fx,$fy) — first press changed " +
                                 "nothing; steering")
@@ -546,7 +584,8 @@ class PageAgent(
                         Log.i(TAG, "hop tap box=[$ymin,$xmin,$ymax,$xmax] -> ($fx,$fy)")
                         // Third slot: did the screen answer this press? Unknown
                         // until the settle watch below fills it in.
-                        tapped.add(floatArrayOf(fx, fy, -1f))
+                        // Fourth slot: refusals charged to THIS spot.
+                        tapped.add(floatArrayOf(fx, fy, -1f, 0f))
                         done.add("tapped ${say.take(48)}")
                         main.post { onText(say); onTap(fx, fy) }
                         Act.ACTED
@@ -798,6 +837,10 @@ class PageAgent(
                 else -> {
                     Log.i(TAG, "hop open $url")
                     opened.add(same)
+                    // The one state-changing action that recorded nothing in
+                    // `done` — so the next prompt could not see that the page
+                    // it asked for is the page it is now looking at.
+                    done.add("opened $same")
                     // A new page is a new screen: a coordinate that was already
                     // pressed here means nothing over there, so the same-spot
                     // guard starts again rather than blocking a fresh target.
@@ -950,8 +993,24 @@ class PageAgent(
                     )
             )
             .put("required", org.json.JSONArray().put("say").put("action"))
+        // ITS OWN ANSWERS, BACK AS TURNS. This was ONE user turn — the
+        // model saw a screenshot and a prompt and nothing else, including
+        // nothing it had itself said a moment earlier. That makes each hop a
+        // pure function of the screen, so a hop whose action does not visibly
+        // change the screen is re-derived verbatim, forever: the guards then
+        // read that identical answer as stubbornness when it is arithmetic.
+        // Measured: eight consecutive requests for the same tap, each a fresh
+        // ~96KB upload, on an errand that had ALREADY succeeded.
+        //
+        // Replies are appended as "model" turns, so the model can see that it
+        // has already asked for this and what came of it. Only the newest
+        // frame is carried; prior turns are text alone, because a history of
+        // screenshots would cost more upload than the loop it prevents.
+        val contents = org.json.JSONArray()
+        for (t in turns) contents.put(t)
+        contents.put(JSONObject().put("role", "user").put("parts", parts))
         val body = JSONObject()
-            .put("contents", org.json.JSONArray().put(JSONObject().put("parts", parts)))
+            .put("contents", contents)
             .put(
                 "generationConfig",
                 JSONObject()
@@ -975,8 +1034,34 @@ class PageAgent(
         // meet it on their first question; the lite models are the ones that
         // are actually always there. x3hub learned the same thing.
         var answer: String? = null
+        quotaHit = false
         lastFail = "I couldn't reach the model."
+        // A QUOTA PAUSE OUTLIVES THE ERRAND THAT EARNED IT. A 429 says the
+        // project is over its limit; starting a new errand ten seconds later
+        // and firing again just re-earns it, which is what made the wearer
+        // meet "the model is busy" over and over rather than once.
+        val waitMs = quotaUntil - SystemClock.elapsedRealtime()
+        if (waitMs > 0) {
+            Log.w(TAG, "quota pause: ${waitMs / 1000}s left")
+            lastFail = "I am over the model's rate limit — about " +
+                "${(waitMs / 1000).coerceAtLeast(1)} seconds to go."
+            return null
+        }
         for (model in MODELS) {
+            // Counted in REQUESTS, which is what a quota counts. Hops and
+            // refusals bound decisions; neither bounds the thing that is
+            // actually scarce, and the model walk spends three per hop.
+            if (calls >= MAX_CALLS) {
+                Log.w(TAG, "model-call ceiling ($MAX_CALLS) reached — stopping")
+                lastFail = "That took more looking than I am allowed for one job."
+                return null
+            }
+            // Never two uploads back to back: on a link already carrying the
+            // mirror, a burst is what turns a slow call into a timed-out one.
+            val since = SystemClock.elapsedRealtime() - lastCallAt
+            if (since in 0 until MIN_CALL_GAP_MS) Thread.sleep(MIN_CALL_GAP_MS - since)
+            lastCallAt = SystemClock.elapsedRealtime()
+            calls++
             val outcome = runCatching {
                 // Through LinkNet, which prefers to hand this to the PHONE:
                 // the frame is a JPEG of the wearer's screen and the phone has
@@ -994,8 +1079,24 @@ class PageAgent(
                         Log.w(TAG, "vision $model HTTP ${resp.code} via=${resp.viaPhone}: ${text.take(200)}")
                         // Busy or rate-limited is worth another model; a 400 or
                         // a 403 is our own request and retrying cannot help.
+                        // 429 IS NOT 503, AND TREATING THEM ALIKE IS WHY THIS
+                        // CASCADES. 503 means THIS model is busy, so trying the
+                        // next one is exactly right. 429 means the PROJECT is
+                        // over quota — every model on the list bills the same
+                        // quota, so walking them fires three requests into a
+                        // limit that is already breached and pushes the reset
+                        // further away. Back off instead, honouring the delay
+                        // Gemini itself names.
                         lastFail = when (resp.code) {
-                            503, 429, 500, 502, 504 -> "The model is busy — try again."
+                            429 -> {
+                                val delay = retryDelayMs(text)
+                                quotaUntil = SystemClock.elapsedRealtime() + delay
+                                Log.w(TAG, "429 quota — pausing ${delay / 1000}s, not walking models")
+                                quotaHit = true
+                                "I am over the model's rate limit — try again in " +
+                                    "${delay / 1000} seconds."
+                            }
+                            503, 500, 502, 504 -> "The model is busy — try again."
                             401, 403 -> "The API key was rejected."
                             else -> "The model returned an error."
                         }
@@ -1020,9 +1121,13 @@ class PageAgent(
                 }
             }.getOrElse { Log.w(TAG, "vision $model failed: ${it.message}"); null }
             if (outcome != null) { answer = outcome; break }
+            // A breached quota is not this model's fault and the next one
+            // shares it — stop walking.
+            if (quotaHit) break
         }
 
         if (answer == null) return null
+        recordTurn(answer)
         runCatching { JSONObject(answer) }.getOrNull()?.let { return it }
         // Not parseable. If it STARTS like JSON it is a broken schema reply,
         // not prose, and reading it out would speak braces and quote marks at
@@ -1036,6 +1141,44 @@ class PageAgent(
         }
         // Genuine prose: treat the whole thing as the answer.
         return JSONObject().put("say", answer).put("action", "none")
+    }
+
+    /**
+     * Keep the model's own reply, and the note the guards wrote about it, in
+     * the conversation — trimmed, because only the recent past steers.
+     *
+     * lastActionNote already says things like "you pressed that and it
+     * worked, do not press it again". It was being handed over as prompt
+     * text with no indication of WHICH answer it judged; as a reply to the
+     * model's actual turn it reads as what it is — a result.
+     */
+    /**
+     * The pause Gemini asks for on a 429, from error.details[].retryDelay
+     * ("27s"). Falls back to a sane wait: guessing short re-earns the limit.
+     */
+    private fun retryDelayMs(body: String): Long = runCatching {
+        val details = JSONObject(body).optJSONObject("error")?.optJSONArray("details")
+            ?: return@runCatching QUOTA_PAUSE_MS
+        for (i in 0 until details.length()) {
+            val d = details.optJSONObject(i) ?: continue
+            val secs = d.optString("retryDelay").removeSuffix("s").toLongOrNull()
+            if (secs != null && secs > 0) return@runCatching secs * 1000
+        }
+        QUOTA_PAUSE_MS
+    }.getOrDefault(QUOTA_PAUSE_MS)
+
+    private fun recordTurn(reply: String) {
+        turns.add(
+            JSONObject().put("role", "model")
+                .put("parts", org.json.JSONArray().put(JSONObject().put("text", reply)))
+        )
+        lastActionNote?.let { note ->
+            turns.add(
+                JSONObject().put("role", "user")
+                    .put("parts", org.json.JSONArray().put(JSONObject().put("text", note)))
+            )
+        }
+        while (turns.size > MAX_TURNS) turns.removeAt(0)
     }
 
     /** Cheap sample grid: true when every probe pixel is the same colour. */
@@ -1097,6 +1240,18 @@ class PageAgent(
 
         /** Refusals before an errand is called circular and stopped. */
         private const val MAX_REFUSALS = 8
+        /** Repeats at ONE spot before the errand accepts that press as its answer. */
+        private const val SPOT_REFUSALS = 2
+        /** Model/user turns carried per errand — recent past only. */
+        private const val MAX_TURNS = 8
+        /** HTTP requests one errand may make, whatever the hops and refusals do. */
+        private const val MAX_CALLS = 14
+        /** Floor between vision calls, so a spin cannot become a burst. */
+        private const val MIN_CALL_GAP_MS = 1200L
+        /** Default quota pause when the 429 body names no delay. */
+        private const val QUOTA_PAUSE_MS = 30_000L
+        /** Shared across errands: a breached quota does not reset on a new one. */
+        @Volatile private var quotaUntil = 0L
         /**
          * Vision upload budget: tallest side and JPEG quality. 1152x540-ish at
          * 60 keeps a phone's UI labels legible to the model at about a third
