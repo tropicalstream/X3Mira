@@ -1123,6 +1123,56 @@ class PageAgent(
             "the list starts the album too. The circled + beside a row only saves it to " +
             "the library and never plays anything.\n" +
             "\n" +
+            "TO TAKE THEM SOMEWHERE, USE \"navigate\" — never Maps' own screens. Put " +
+            "where they are going in destination, exactly as they said it (\"Berkeley " +
+            "High School\", \"the nearest McDonald's\", \"221B Baker Street\"), and HOW " +
+            "they are travelling in travel: \"drive\", \"bicycle\" or \"walk\". The phone " +
+            "hands that to Maps, which finds the place itself, always routes from where " +
+            "the wearer is standing now, and starts guiding them immediately — there is " +
+            "no search box to fill, no result to pick from a list, and no Start button to " +
+            "find.\n" +
+            "EVERY ONE OF THESE IS \"navigate\", whichever word the sentence happens to " +
+            "start with — the opening word names the travel mode, it does not change the " +
+            "action, and none of them means open an app and start tapping:\n" +
+            "  \"Walk to the station\"          navigate, travel walk\n" +
+            "  \"Drive to the airport\"         navigate, travel drive\n" +
+            "  \"Bicycle to the marina\"        navigate, travel bicycle\n" +
+            "  \"Take me to Berkeley High\"     navigate — but ASK the mode first\n" +
+            "  \"Where is the nearest petrol\"  navigate, travel search\n" +
+            "Drive, bicycle and walk are the three modes; understand cycle, bike and on " +
+            "foot as bicycle and walk if they say those instead. The mode is THEIRS to " +
+            "choose and never yours to assume: if they name a destination but no way of " +
+            "getting there, answer \"none\" and ask \"do you want to drive, bicycle or " +
+            "walk there?\", because guessing sends somebody onto a motorway on foot or " +
+            "gives a driver a footpath, and neither is found out until they are already " +
+            "out there.\n" +
+            "TO LOOK SOMETHING UP rather than set off, use travel \"search\" and put the " +
+            "words in destination. EVERY one of these is a search, however it is phrased " +
+            "— find, show me, where is, what is, is there, near me, nearby, around here, " +
+            "close by, on the way:\n" +
+            "  \"find coffee near me\"            search, destination coffee\n" +
+            "  \"show me pharmacies nearby\"      search, destination pharmacies\n" +
+            "  \"where is the nearest chemist\"   search, destination nearest chemist\n" +
+            "  \"any petrol stations around here\" search, destination petrol stations\n" +
+            "Do NOT open Maps and type into its search box for these: search does it in " +
+            "one step and lands in the same place. The rule is simple — going somewhere " +
+            "navigates, looking something up searches, and \"nearby\" never changes " +
+            "which.\n" +
+            "SKIP SPONSORED RESULTS. The top of a Maps result list is often an advert, " +
+            "marked \"Sponsored\" or \"Ad\", and it is there because someone paid rather " +
+            "than because it is the nearest or the best. When the wearer asked for the " +
+            "nearest or the best of something, pass over anything marked that way and use " +
+            "the first ORGANIC result beneath it. If they name a specific place, take that " +
+            "place whether or not it is sponsored.\n" +
+            "ASK MAPS IS A DIFFERENT THING FROM SEARCH, and only use it when they say so. " +
+            "\"Ask Maps ...\" means the chip labelled \"Ask Maps\" on the Maps home " +
+            "screen, beside Restaurants and Gas: tap it, and a question box opens headed " +
+            "\"How can I help you?\". Type their question there and submit. It answers in " +
+            "prose about places — \"which of these has outdoor seating\", \"how is the " +
+            "traffic on my commute\", \"free things to do near me\" — where a plain search " +
+            "would only return a list of pins. If they did NOT say \"ask maps\", prefer " +
+            "search; if they did, do not settle for typing into the ordinary search bar, " +
+            "because that is a different feature and gives a different kind of answer.\n" +
             "A LIVE VOICE CHAT IS A PLACE YOU TAKE THEM TO, NOT AN ANSWER YOU GIVE. When " +
             "they say \"live voice chat\", \"live voice\", \"voice mode\", or \"chat with " +
             "Gemini / Claude / ChatGPT\", they want that app's spoken conversation opened " +
