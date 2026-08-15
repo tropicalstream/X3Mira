@@ -27,6 +27,27 @@ object Prefs {
 
     private const val K_SPEED = "speed"
 
+    /**
+     * The last HUD config the phone pushed.
+     *
+     * These are the WEARER's choices but they live on the PHONE, which means
+     * the glasses only learn them when a link exists. Held in memory alone,
+     * every restart put the HUD back to factory defaults — date+time+battery
+     * at one banner line — and the wearer watched their settings "get wiped"
+     * whenever the app restarted or the phone was out of reach. Outdoors with
+     * no phone in range they were never right at all.
+     *
+     * The phone stays the source of truth and overwrites these on connect
+     * (it pushes the config as its first act). This is only so the HUD is
+     * already right in the meantime.
+     */
+    private const val K_HUD_LINES = "hud_lines"
+    private const val K_HUD_READOUT = "hud_readout"
+    private const val K_HUD_FONT = "hud_font"
+    private const val K_HUD_AGENT = "hud_agent"
+    private const val K_HUD_TYPING = "hud_typing"
+    private const val K_HUD_POINTER = "hud_pointer"
+
     /** Presets, coarsest first. "Best" is the default and means half-native. */
     val WIDTHS = intArrayOf(360, 540, 720, 1080)
 
@@ -50,4 +71,34 @@ object Prefs {
     fun p2p(c: Context): Boolean = p(c).getBoolean(K_P2P, true)
     fun setP2p(c: Context, v: Boolean) = p(c).edit().putBoolean(K_P2P, v).apply()
     fun setSpeed(c: Context, v: Float) = p(c).edit().putFloat(K_SPEED, v).apply()
+
+    /**
+     * The six fields of a HUDCFG message, in wire order. Defaults match the
+     * ones MirrorHud and MainActivity were born with, so a pair that has
+     * never connected behaves exactly as before.
+     */
+    data class HudCfg(
+        val lines: Int, val readout: Int, val fontPct: Int,
+        val agentOn: Boolean, val typing: Boolean, val pointerPct: Int
+    )
+
+    fun hudCfg(c: Context): HudCfg = p(c).let {
+        HudCfg(
+            lines = it.getInt(K_HUD_LINES, 1),
+            readout = it.getInt(K_HUD_READOUT, 3),
+            fontPct = it.getInt(K_HUD_FONT, 100),
+            agentOn = it.getBoolean(K_HUD_AGENT, true),
+            typing = it.getBoolean(K_HUD_TYPING, false),
+            pointerPct = it.getInt(K_HUD_POINTER, 80)
+        )
+    }
+
+    fun setHudCfg(c: Context, v: HudCfg) = p(c).edit()
+        .putInt(K_HUD_LINES, v.lines)
+        .putInt(K_HUD_READOUT, v.readout)
+        .putInt(K_HUD_FONT, v.fontPct)
+        .putBoolean(K_HUD_AGENT, v.agentOn)
+        .putBoolean(K_HUD_TYPING, v.typing)
+        .putInt(K_HUD_POINTER, v.pointerPct)
+        .apply()
 }

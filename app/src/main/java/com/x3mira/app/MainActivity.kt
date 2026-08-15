@@ -214,6 +214,9 @@ class MainActivity : Activity() {
             layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
         content.addView(hud)
+        // The wearer's last known choices, before any link exists — so the
+        // landing screen they are looking at right now is already theirs.
+        applyHudCfg(Prefs.hudCfg(this), refit = false)
 
         // Above the video on purpose — see PadCursor. Hidden until a double
         // tap summons it, so the resting mirror is still an uncluttered
@@ -323,6 +326,30 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Apply one HUD config, from the wire or from what was remembered.
+     *
+     * One applier for both so the two can never drift — a remembered config
+     * that took a different path to the same fields is a config that
+     * eventually disagrees with the live one.
+     *
+     * [refit] is false during onCreate: the video does not exist yet, and
+     * refit() there would measure a layout that has not happened.
+     */
+    private fun applyHudCfg(cfg: Prefs.HudCfg, refit: Boolean = true) {
+        pointerPct = cfg.pointerPct.coerceIn(20, 300)
+        // If the reserved bands changed size, refit the video so mirror and
+        // HUD still never overlap.
+        var changed = hud.applyConfig(cfg.lines, cfg.readout, cfg.fontPct)
+        if (hud.setAgentEnabled(cfg.agentOn)) changed = true
+        if (!cfg.agentOn) agent?.exit()
+        // The wire's fifth flag is "may the agent type" — the old
+        // read-screen-text flag it replaced was assigned here and read
+        // nowhere, so the setting did nothing whichever way it was set.
+        agent?.typingEnabled = cfg.typing
+        if (changed && refit) refit()
+    }
+
     private fun connect(surface: Surface) {
         link?.stop()
         if (discovery == null) discovery = Discovery(this).also { it.start() }
@@ -380,19 +407,15 @@ class MainActivity : Activity() {
             onNotif = { s -> ui.post { hud.setNotif(s) } },
             onHudCfg = { lines, readout, pct, agentOn, a11y, pointer ->
                 ui.post {
-                    pointerPct = pointer.coerceIn(20, 300)
-                    // The wearer changed HUD or agent settings on the phone:
-                    // apply, and if the reserved bands changed size, refit the
-                    // video so mirror and HUD still never overlap.
-                    var changed = hud.applyConfig(lines, readout, pct)
-                    if (hud.setAgentEnabled(agentOn)) changed = true
-                    if (!agentOn) agent?.exit()
-                    // The wire's fifth flag is now "may the agent type" — the
-                    // old read-screen-text flag it replaced was assigned here
-                    // and read nowhere, so the setting did nothing whichever
-                    // way it was set.
-                    agent?.typingEnabled = a11y
-                    if (changed) refit()
+                    val cfg = Prefs.HudCfg(lines, readout, pct, agentOn, a11y, pointer)
+                    applyHudCfg(cfg)
+                    // REMEMBERED, so the next start is already right. The
+                    // phone owns these settings and re-pushes them on every
+                    // connect; this only covers the stretch before that —
+                    // which is the whole session when there is no phone in
+                    // range, and was long enough to read as "my settings keep
+                    // getting wiped".
+                    Prefs.setHudCfg(this, cfg)
                 }
             }
         ).also { it.start(surface) }
