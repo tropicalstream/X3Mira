@@ -79,6 +79,8 @@ class PageAgent(
      * phone, not a button at all.
      */
     private val onGlobal: (Int) -> Unit = { },
+    /** Start turn-by-turn navigation, or ask the map a question. */
+    private val onNavigate: (destination: String, mode: String) -> Unit = { _, _ -> },
     /**
      * A TINY copy of the mirror, for "has the screen changed yet?".
      *
@@ -261,6 +263,7 @@ class PageAgent(
             when (perform(action, obj, say)) {
                 Act.SETTLED -> { finish(say, ok = true); return }
                 Act.CANNOT -> { finish(say, ok = false); return }
+                Act.DONE -> return          // the branch already spoke for itself
                 Act.ACTED -> Unit
             }
             hop++
@@ -399,7 +402,15 @@ class PageAgent(
         .trimEnd('/')
 
     /** ACTED = carry on hopping; SETTLED = the errand is finished; CANNOT = give up. */
-    private enum class Act { ACTED, SETTLED, CANNOT }
+    /**
+     * ACTED   did something; look again.
+     * SETTLED done, and the loop speaks the model's own confirmation.
+     * CANNOT  cannot be done, and the loop says why.
+     * DONE    the branch has ALREADY finished the errand in its own words —
+     *         used where the right answer is a question back to the wearer
+     *         rather than an action, so the loop must not speak over it.
+     */
+    private enum class Act { ACTED, SETTLED, CANNOT, DONE }
 
     private fun perform(action: String, obj: JSONObject, say: String): Act = when (action) {
         "tap" -> {
@@ -458,6 +469,27 @@ class PageAgent(
                         main.post { onText(say); onTap(fx, fy) }
                         Act.ACTED
                     }
+                }
+            }
+        }
+        "navigate" -> {
+            val dest = obj.optString("destination").trim()
+            val travel = obj.optString("travel").trim().lowercase()
+            when {
+                dest.isEmpty() -> Act.CANNOT
+                // NO DEFAULT TRAVEL MODE, deliberately. Guessing "drive" for
+                // someone who meant to walk sends them onto roads with no
+                // pavement; guessing "walk" for a long drive is merely absurd.
+                // The wearer says which, or they are asked.
+                travel !in setOf("drive", "bicycle", "walk", "search") -> {
+                    Log.i(TAG, "hop navigate '$dest' with no travel mode — asking instead")
+                    finish("Do you want to drive, bicycle or walk there?", ok = true)
+                    Act.DONE
+                }
+                else -> {
+                    Log.i(TAG, "hop navigate $travel -> '$dest'")
+                    main.post { onText(say); onNavigate(dest, travel) }
+                    Act.SETTLED
                 }
             }
         }
@@ -723,7 +755,7 @@ class PageAgent(
                             .put("enum", org.json.JSONArray()
                                 .put("none").put("tap").put("scroll_down")
                                 .put("scroll_up").put("open_url").put("open_app")
-                                .put("media").put("nav").put("window")
+                                .put("media").put("nav").put("window").put("navigate")
                                 .apply { if (typingEnabled) put("type") })
                     )
                     .put("app", JSONObject().put("type", "STRING"))
@@ -745,6 +777,12 @@ class PageAgent(
                         "window", JSONObject().put("type", "STRING")
                             .put("enum", org.json.JSONArray()
                                 .put("fullscreen").put("close"))
+                    )
+                    .put("destination", JSONObject().put("type", "STRING"))
+                    .put(
+                        "travel", JSONObject().put("type", "STRING")
+                            .put("enum", org.json.JSONArray()
+                                .put("drive").put("bicycle").put("walk").put("search"))
                     )
                     // Going to a named site is not a gesture. Without this the
                     // model does the only thing its vocabulary allows — taps

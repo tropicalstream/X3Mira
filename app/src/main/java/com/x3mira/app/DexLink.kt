@@ -298,6 +298,19 @@ class DexLink(
     fun openApp(name: String) = send { it.writeByte('A'.code); it.writeUTF(name) }
 
     /**
+     * Start turn-by-turn navigation, or ask the map a question.
+     *
+     * The travel mode travels as its own field rather than being folded into
+     * the destination text: "walk to the station" and "drive to the station"
+     * differ only in a word, and a wearer sent driving directions while on
+     * foot finds out somewhere unpleasant. Keeping it separate means it
+     * cannot be lost in a phrase.
+     */
+    fun navigate(destination: String, mode: String) = send {
+        it.writeByte('N'.code); it.writeUTF(destination); it.writeUTF(mode)
+    }
+
+    /**
      * Tell the phone which channel our infrastructure Wi-Fi occupies, 0 for
      * none. The phone forms the NEXT P2P group there, so this one radio can
      * serve its router and the mirror without time-slicing two channels —
