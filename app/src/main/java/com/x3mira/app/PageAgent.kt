@@ -82,6 +82,12 @@ class PageAgent(
     /** Start turn-by-turn navigation, or ask the map a question. */
     private val onNavigate: (destination: String, mode: String) -> Unit = { _, _ -> },
     /**
+     * Flip the GLASSES' own mirror between full-screen and a small corner
+     * window. Returns the new state (true = compact). The one verb that
+     * never touches the phone: the layout being changed is ours.
+     */
+    private val onHudToggle: () -> Boolean = { false },
+    /**
      * A TINY copy of the mirror, for "has the screen changed yet?".
      *
      * Deliberately not [frameProvider]: that returns the decoder's full
@@ -548,6 +554,19 @@ class PageAgent(
                 }
             }
         }
+        "hud" -> {
+            // Glasses-local and instant — but it moves VIEWS, and layout only
+            // happens on the main thread. The first cut called through from
+            // the hop worker for the sake of the return value and
+            // requestLayout threw, killing the app mid-errand. The toggle now
+            // rides main.post like every other UI callback; the model's own
+            // say is the confirmation and MainActivity flashes the new state.
+            main.post {
+                val compact = onHudToggle()
+                Log.i(TAG, "hop hud toggle -> ${if (compact) "compact" else "full"}")
+            }
+            Act.SETTLED
+        }
         "wait" -> {
             // "Still loading" is not "finished", and the model had no way to
             // say so: it kept answering none — which ends the errand — while
@@ -881,7 +900,7 @@ class PageAgent(
                             .put("enum", org.json.JSONArray()
                                 .put("none").put("tap").put("scroll_down")
                                 .put("scroll_up").put("open_url").put("open_app")
-                                .put("media").put("nav").put("window").put("navigate").put("wait")
+                                .put("media").put("nav").put("window").put("navigate").put("wait").put("hud")
                                 .apply { if (typingEnabled) put("type") })
                     )
                     .put("app", JSONObject().put("type", "STRING"))
@@ -1206,6 +1225,17 @@ class PageAgent(
             "\"close\" to get rid of it. Do not aim at it yourself: it is a few hundred " +
             "pixels in a corner and its X is not drawn until the window has been touched, " +
             "so the phone taps it and presses the X for you, exactly.\n" +
+            "\"TOGGLE HUD MODE\" IS THE GLASSES' OWN DISPLAY, NOT THE PHONE. When they " +
+            "say toggle hud mode, hud mode, compact mode, small window mode, or ask to " +
+            "— and HUD is one word said aloud, so the transcript may spell it hud, " +
+            "HUD, H U D, or even \"had\"/\"hood\" misheard before \"mode\"; any of " +
+            "those next to the word mode means this — " +
+            "make the mirror small or full screen again, use action \"hud\" — one step, " +
+            "done. It flips THIS display between the full-screen mirror and a small " +
+            "window in the top left that leaves the world visible; saying it again flips " +
+            "back. Nothing on the phone changes, so do not open any app, press anything, " +
+            "or reach for \"window\" — that verb is for the phone's own floating video, " +
+            "which is a different thing entirely.\n" +
             "TO USE THE PHONE'S OWN BUTTONS, USE \"nav\": set nav to \"home\" to go back " +
             "to the phone's home screen, \"back\" to go back one step, \"recents\" for the " +
             "app switcher. This works from inside any app. Do not look for a home button " +

@@ -281,6 +281,8 @@ class MainActivity : Activity() {
             // Transport rides the existing 'G' verb: codes 4+ are media keys
             // on the phone side, dispatched to whichever session holds audio.
             onGlobal = { code -> link?.global(code) },
+            // Glasses-local, deliberately: this changes OUR layout, not the phone.
+            onHudToggle = { toggleHudMode() },
             onNavigate = { dest, mode -> link?.navigate(dest, mode) },
             // Tiny on purpose: this answers "has the picture changed?", not
             // "what does it say", and it is sampled several times a second.
@@ -456,7 +458,13 @@ class MainActivity : Activity() {
         val top = hud.topBandPx()
         val bottom = hud.bottomBandPx()
         val availH = (VIEW_H - top - bottom).coerceAtLeast(1)
-        val scale = minOf(VIEW_W.toFloat() / fw, availH.toFloat() / fh)
+        // Compact: fit inside a corner box instead of the whole strip. The
+        // box is landscape-proportioned (half the width, a shorter height),
+        // so a landscape stream fills it and a portrait stream stands small
+        // inside it — either way the world stays visible around it.
+        val boxW = if (hudCompact) (VIEW_W * COMPACT_FRAC).toInt() else VIEW_W
+        val boxH = if (hudCompact) (availH * COMPACT_FRAC).toInt().coerceAtLeast(1) else availH
+        val scale = minOf(boxW.toFloat() / fw, boxH.toFloat() / fh)
         val w = (fw * scale).toInt().coerceAtLeast(1)
         val h = (fh * scale).toInt().coerceAtLeast(1)
         // TOP gravity + an explicit computed margin, NOT CENTER-with-margins:
@@ -464,14 +472,41 @@ class MainActivity : Activity() {
         // (childTop = (H-h)/2 + topMargin - bottomMargin) — it does not
         // centre between the margins, so asymmetric bands would shove the
         // video into a band. With TOP the margin IS the y position, exactly.
-        val y = top + (availH - h) / 2
+        // x is now explicit for the same reason y always was: compact mode
+        // anchors LEFT, and videoRect must read the laid-out position rather
+        // than assume centring. The margin IS the position, in both modes.
+        val y = if (hudCompact) top + COMPACT_PAD else top + (availH - h) / 2
+        val x = if (hudCompact) COMPACT_PAD else (VIEW_W - w) / 2
         val lp = video.layoutParams as FrameLayout.LayoutParams
-        if (lp.width == w && lp.height == h && lp.topMargin == y) return
+        if (lp.width == w && lp.height == h && lp.topMargin == y && lp.leftMargin == x) return
         lp.width = w; lp.height = h
-        lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        lp.topMargin = y; lp.bottomMargin = 0
+        lp.gravity = Gravity.TOP or Gravity.LEFT
+        lp.leftMargin = x; lp.topMargin = y; lp.bottomMargin = 0
         video.layoutParams = lp
         Log.i(DexLink.TAG, "fit ${fw}x$fh -> ${w}x$h (scale %.3f, bands $top/$bottom, y=$y)".format(scale))
+    }
+
+    /**
+     * Compact mode: the mirror shrinks to a small window in the TOP LEFT and
+     * the rest of the view goes dark, instead of the full-screen fit.
+     *
+     * The wearer's "toggle hud mode". Full screen is for using the phone;
+     * compact is for keeping half an eye on it — a video, a route — while
+     * looking at the world. One state flag, and the same fit function reads
+     * it, so display and click mapping can never diverge between modes.
+     */
+    @Volatile private var hudCompact = false
+
+    fun toggleHudMode(): Boolean {
+        hudCompact = !hudCompact
+        refit()
+        // Compact wants a LANDSCAPE stream — a portrait sliver in the
+        // corner is unreadable. 15 pins the phone to landscape, 16 gives
+        // rotation back to the sensor; rotation-follow reconfigures the
+        // encoder and the reconnect refits us automatically.
+        link?.global(if (hudCompact) 15 else 16)
+        flashNotice(if (hudCompact) "compact mirror" else "full mirror")
+        return hudCompact
     }
 
     private fun applySettings() {
@@ -809,7 +844,7 @@ class MainActivity : Activity() {
         // reads the exact same number fitVideoToFrame wrote, so display and
         // taps can never disagree again.
         val lp = video.layoutParams as FrameLayout.LayoutParams
-        return floatArrayOf((VIEW_W - w) / 2f, lp.topMargin.toFloat(), w, h)
+        return floatArrayOf(lp.leftMargin.toFloat(), lp.topMargin.toFloat(), w, h)
     }
 
     private fun moveCursor(dx: Float, dy: Float) {
@@ -835,6 +870,11 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        /** Compact mirror: fraction of the viewport the corner box may use. */
+        const val COMPACT_FRAC = 0.5f
+        /** Breathing room so the compact window clears the corner and top band. */
+        const val COMPACT_PAD = 8
+
         const val VIEW_W = 640
         const val VIEW_H = 480
         private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
