@@ -343,9 +343,31 @@ class PageAgent(
             // Remember whether THAT press did anything, against the spot that
             // made it. It is the only honest way to answer "was this already
             // done?" if the model reaches for the same control a second time.
-            if (tapped.size > tapsBefore) tapped.last()[2] = if (moved) 1f else 0f
+            // "DID THAT PRESS WORK?" IS UNANSWERABLE OVER A PLAYING VIDEO.
+            // The signal is "did the picture change", and a video changes
+            // every frame — so every press looks like it worked, including
+            // ones that hit nothing. Recorded as UNKNOWN (-1) unless the
+            // screen actually came to rest, because the convergence rule
+            // treats a press that "worked" as the errand's answer, and over
+            // video that turned a tap into a false success.
+            if (tapped.size > tapsBefore) {
+                tapped.last()[2] = when {
+                    !moved -> 0f            // nothing stirred: the press missed
+                    lastSettled -> 1f       // it moved AND came to rest: it worked
+                    else -> -1f             // still moving: cannot tell
+                }
+            }
             if (mine != generation) return
-            shot = grabFrame()
+            // Settled: the screen is holding still and the newest frame IS the
+            // result. Never settled but something moved: the picture is still
+            // in motion — a playing video — so the newest frame is just a
+            // later moment of that motion, while the early one caught whatever
+            // the action put on screen. Take that instead.
+            val settled = lastSettled
+            val early = if (!settled && moved) earlyShot?.also { earlyShot = null } else null
+            shot = early ?: grabFrame()
+            Log.i(TAG, "frame for next hop: ${if (early != null) "EARLY" else "fresh"} " +
+                "(settled=$settled moved=$moved)")
             if (shot == null) { finish("I lost sight of the screen.", ok = false); return }
         }
         finish("I tried a few steps and could not finish that.", ok = false)
@@ -404,13 +426,30 @@ class PageAgent(
      * judge from the frame.
      */
     private fun awaitSettled(before: Long?, capMs: Long): Boolean {
+        runCatching { earlyShot?.recycle() }
+        earlyShot = null
         if (before == null) { Thread.sleep(SETTLE_MS); return false }
         val start = SystemClock.uptimeMillis()
         var changed = false
         var lastSig = before
         var stillSince = 0L
+        var grabbedEarly = false
         while (SystemClock.uptimeMillis() - start < capMs) {
             Thread.sleep(PROBE_MS)
+            // A SNAPSHOT OF THE MOMENT THE ACTION LANDED. Some of the most
+            // useful screens are deliberately temporary — a video player's
+            // controls surface on a tap and fade in about three seconds — and
+            // waiting for stillness on a PLAYING video can never succeed, so
+            // this loop always runs its full cap and photographs the screen
+            // after they have gone. Measured on "turn on closed captions":
+            // tapped to reveal the controls, looked 5.5s later, saw bare
+            // video, and concluded captions must already be on.
+            if (!grabbedEarly && SystemClock.uptimeMillis() - start >= EARLY_MS) {
+                grabbedEarly = true
+                earlyShot = grabFrame()
+                Log.i(TAG, "early frame at ${SystemClock.uptimeMillis() - start}ms " +
+                    "(${if (earlyShot == null) "FAILED" else "ok"})")
+            }
             val sig = probe() ?: continue
             if (!changed) {
                 if (sig != before) { changed = true; lastSig = sig; stillSince = SystemClock.uptimeMillis() }
@@ -419,12 +458,30 @@ class PageAgent(
             if (sig != lastSig) { lastSig = sig; stillSince = SystemClock.uptimeMillis(); continue }
             if (SystemClock.uptimeMillis() - stillSince >= STILL_MS) {
                 Log.i(TAG, "settled after ${SystemClock.uptimeMillis() - start}ms")
+                lastSettled = true
                 return true
             }
         }
         Log.i(TAG, "settle cap hit after ${capMs}ms (changed=$changed)")
+        lastSettled = false
         return changed
     }
+
+    /**
+     * Whether the newest [awaitSettled] reached stillness, as opposed to
+     * running out its cap. The return value alone cannot say: it answers "did
+     * anything move", and both a settled screen and a video that never stops
+     * moving answer yes.
+     */
+    @Volatile private var lastSettled = false
+
+    /**
+     * The frame from just after the action, kept only while the screen never
+     * settled. Nothing to do with being quicker: when motion never stops the
+     * LAST frame has no claim to being the interesting one, and the early one
+     * is where a transient overlay still exists.
+     */
+    @Volatile private var earlyShot: Bitmap? = null
 
     /**
      * Every place this errand has pressed, so it cannot press one twice.
@@ -1294,6 +1351,8 @@ class PageAgent(
         private const val PROBE_MS = 150L
         /** Unchanged for this long counts as "finished moving". */
         private const val STILL_MS = 350L
+        /** When to snapshot the action's effect, before a transient overlay fades. */
+        private const val EARLY_MS = 900L
         /**
          * Longest to wait on an ordinary action. Generous because the cost of
          * waiting is a pause, and the cost of NOT waiting is the model acting
