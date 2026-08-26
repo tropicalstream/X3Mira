@@ -13,6 +13,29 @@ Two apps:
 Miracast-style, not DeX: no OEM cooperation, no root, no adb at run time. The
 phone needs one screen-capture consent and it works.
 
+### Install
+
+Both APKs are in this repo — sideload each onto its own device:
+
+```bash
+adb -s <glasses> install -r X3Mira-glasses.apk    # com.x3mira.app
+adb -s <phone>   install -r X3Mira-phone.apk      # com.x3mira.phone
+```
+
+The phone app's source lives in its own repository,
+[X3MiraPhone](https://github.com/tropicalstream/X3MiraPhone); the two ship
+together and their wire format has to match, so update them as a pair.
+
+### A note on the Wi-Fi Direct passphrase
+
+When the pair falls back to Wi-Fi Direct, the group is created with a fixed
+network name and passphrase compiled into both apps — that is what lets the
+glasses join without a human accepting a dialog every session. It is in this
+source, so treat it as public: anyone within radio range running this code
+could join the group. It carries only the mirror, and the phone keeps
+cellular as its default route, but change both constants if that matters to
+you.
+
 ---
 
 ## Which browsers does this work with?
