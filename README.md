@@ -189,3 +189,17 @@ the path everything above describes.
 
 `sdk.dir` in `local.properties`; minSdk 29, compileSdk 34. The phone app lives
 in the sibling `X3MiraPhone` repo and must be installed too.
+
+---
+
+## License
+
+[MIT](LICENSE), with a project notice covering what this software actually
+does, because none of it is obvious from a feature list: it mirrors **every**
+pixel of the phone including notifications and passwords as they are typed;
+the link is **not encrypted by this software** and the Wi-Fi Direct
+credentials are public constants in this source; the companion app can
+**operate the phone** through an accessibility service; and the page agent
+**uploads a picture of your screen** to a model provider when an errand runs.
+
+Read it before pointing this at a phone you care about.
